@@ -79,6 +79,17 @@ web_modules/
 .env.production.local
 .env.local
 
+# Docker volumes
+postgres-data/
+redis-data/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
 # parcel-bundler cache (https://parceljs.org/)
 .cache
 .parcel-cache

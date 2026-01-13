@@ -1,0 +1,34 @@
+{
+  "name": "pfs-automation-backend",
+  "version": "1.0.0",
+  "description": "PFS Automation Backend - AdonisJS API",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "node ace serve --watch",
+    "build": "node ace build",
+    "start": "node bin/server.js",
+    "migration:run": "node ace migration:run",
+    "migration:rollback": "node ace migration:rollback",
+    "migration:fresh": "node ace migration:fresh",
+    "db:seed": "node ace db:seed"
+  },
+  "dependencies": {
+    "@adonisjs/core": "^6.12.1",
+    "@adonisjs/lucid": "^21.2.0",
+    "@adonisjs/auth": "^9.2.3",
+    "@adonisjs/session": "^7.4.2",
+    "@adonisjs/cors": "^2.2.1",
+    "pg": "^8.11.3",
+    "luxon": "^3.4.4",
+    "redis": "^4.6.13",
+    "bcrypt": "^5.1.1",
+    "validator": "^13.11.0"
+  },
+  "devDependencies": {
+    "@adonisjs/assembler": "^7.7.0",
+    "@types/node": "^20.11.19",
+    "@types/bcrypt": "^5.0.2",
+    "typescript": "^5.3.3"
+  }
+}

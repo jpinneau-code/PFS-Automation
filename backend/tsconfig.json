@@ -1,0 +1,14 @@
+{
+  "extends": "@adonisjs/core/tsconfig.json",
+  "compilerOptions": {
+    "rootDir": "./",
+    "outDir": "./build",
+    "paths": {
+      "#config/*": ["./config/*.js"],
+      "#contracts/*": ["./contracts/*.js"],
+      "#models/*": ["./app/Models/*.js"],
+      "#controllers/*": ["./app/Controllers/*.js"],
+      "#middleware/*": ["./app/Middleware/*.js"]
+    }
+  }
+}
