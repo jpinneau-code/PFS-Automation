@@ -6,7 +6,7 @@
 ![TypeScript](https://img.shields.io/badge/TypeScript-5.3-blue.svg)
 ![Status](https://img.shields.io/badge/status-stable-green.svg)
 
-Professional Financial Services Automation Platform - A comprehensive solution for audit and financial process automation.
+Project Follow-up Services Automation Platform - A comprehensive solution for Project Follow-up and update automation.
 
 ## Features
 
