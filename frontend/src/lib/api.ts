@@ -29,6 +29,24 @@ export const setupAPI = {
   },
 }
 
+// Auth API functions
+export const authAPI = {
+  login: async (data: { username: string; password: string }) => {
+    const response = await api.post('/api/auth/login', data)
+    return response.data
+  },
+
+  forgotPassword: async (identifier: string) => {
+    const response = await api.post('/api/auth/forgot-password', { identifier })
+    return response.data
+  },
+
+  resetPassword: async (data: { token: string; newPassword: string }) => {
+    const response = await api.post('/api/auth/reset-password', data)
+    return response.data
+  },
+}
+
 // Health check
 export const healthCheck = async () => {
   const response = await api.get('/health')

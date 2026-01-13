@@ -1,109 +1,109 @@
 #!/usr/bin/env node
 
-const { spawn } = require('child_process');
-const { exec } = require('child_process');
+const { spawn, exec } = require('child_process');
+const { promisify } = require('util');
+const execAsync = promisify(exec);
 
 console.log('╔══════════════════════════════════════════════════════════════╗');
 console.log('║         PFS Automation - Development Mode                    ║');
 console.log('╚══════════════════════════════════════════════════════════════╝\n');
 
-// Step 1: Start Docker infrastructure
-console.log('🐳 Starting Docker infrastructure (PostgreSQL + Redis)...\n');
+async function checkContainerRunning(name) {
+  try {
+    const { stdout } = await execAsync(`docker ps --filter name=${name} --filter status=running --format "{{.Names}}"`);
+    return stdout.trim() === name;
+  } catch {
+    return false;
+  }
+}
 
-const dockerProcess = spawn('docker-compose', ['up', 'postgres', 'redis'], {
-  cwd: process.cwd(),
-  stdio: 'pipe'
-});
+async function startInfrastructure() {
+  console.log('🐳 Starting Docker infrastructure (PostgreSQL + Redis + Mailhog)...\n');
 
-let postgresReady = false;
-let redisReady = false;
+  // Start containers (will do nothing if already running)
+  exec('docker-compose up -d postgres redis mailhog', { cwd: process.cwd() });
 
-dockerProcess.stdout.on('data', (data) => {
-  const output = data.toString();
+  // Wait for containers to be ready
+  let attempts = 0;
+  const maxAttempts = 30;
 
-  // Check for PostgreSQL ready
-  if (output.includes('database system is ready to accept connections')) {
-    postgresReady = true;
-    console.log('✅ PostgreSQL is ready\n');
+  while (attempts < maxAttempts) {
+    const postgresRunning = await checkContainerRunning('postgres-pfs');
+    const redisRunning = await checkContainerRunning('audit-redis');
+    const mailhogRunning = await checkContainerRunning('pfs-mailhog');
+
+    if (postgresRunning && redisRunning && mailhogRunning) {
+      console.log('✅ PostgreSQL is ready');
+      console.log('✅ Redis is ready');
+      console.log('✅ Mailhog is ready (Web UI: http://localhost:8025)\n');
+
+      // Give database a moment to fully initialize
+      await new Promise(resolve => setTimeout(resolve, 2000));
+      return true;
+    }
+
+    attempts++;
+    await new Promise(resolve => setTimeout(resolve, 1000));
   }
 
-  // Check for Redis ready
-  if (output.includes('Ready to accept connections')) {
-    redisReady = true;
-    console.log('✅ Redis is ready\n');
-  }
-
-  // When both are ready, start the app services
-  if (postgresReady && redisReady && !servicesStarted) {
-    servicesStarted = true;
-    startAppServices();
-  }
-});
-
-dockerProcess.stderr.on('data', (data) => {
-  // Ignore network warnings
-  if (!data.toString().includes('obsolete') && !data.toString().includes('Pool overlaps')) {
-    console.error(data.toString());
-  }
-});
-
-let servicesStarted = false;
+  return false;
+}
 
 function startAppServices() {
   console.log('🚀 Starting application services...\n');
+  console.log('🟢 Starting Backend on port 3333...');
+  console.log('🔵 Starting Frontend on port 3000...\n');
 
-  // Step 2: Run backend migrations
-  console.log('📊 Running database migrations...\n');
-  exec('cd backend && pnpm exec node ace.js migration:run --force', (error, stdout, stderr) => {
-    if (error && !error.message.includes('Already up to date')) {
-      console.error('Migration error (this might be OK if tables exist):', error.message);
-    }
-    if (stdout) console.log(stdout);
-
-    // Step 3: Start backend and frontend
-    console.log('🟢 Starting Backend on port 3333...');
-    console.log('🔵 Starting Frontend on port 3000...\n');
-
-    const concurrentProcess = spawn('npx', [
-      'concurrently',
-      '-n', 'backend,frontend',
-      '-c', 'green,cyan',
-      'cd backend && pnpm run dev',
-      'cd frontend && pnpm run dev'
-    ], {
-      cwd: process.cwd(),
-      stdio: 'inherit',
-      shell: true
-    });
-
-    // Open browser after a delay
-    setTimeout(() => {
-      console.log('\n🌐 Opening browser at http://localhost:3000\n');
-      const command = process.platform === 'darwin' ? 'open' : process.platform === 'win32' ? 'start' : 'xdg-open';
-      exec(`${command} http://localhost:3000`);
-    }, 5000);
-
-    concurrentProcess.on('exit', (code) => {
-      console.log('\n👋 Shutting down...');
-      dockerProcess.kill();
-      process.exit(code);
-    });
+  const concurrentProcess = spawn('npx', [
+    'concurrently',
+    '-n', 'backend,frontend',
+    '-c', 'green,cyan',
+    './scripts/start-backend.sh',
+    './scripts/start-frontend.sh'
+  ], {
+    cwd: process.cwd(),
+    stdio: 'inherit',
+    shell: true
   });
+
+  // Open browser after a delay
+  setTimeout(() => {
+    console.log('\n🌐 Opening browser at http://localhost:3000\n');
+    const command = process.platform === 'darwin' ? 'open' : process.platform === 'win32' ? 'start' : 'xdg-open';
+    exec(`${command} http://localhost:3000`);
+  }, 8000);
+
+  concurrentProcess.on('exit', (code) => {
+    console.log('\n👋 Shutting down...');
+    exec('docker-compose stop postgres redis');
+    process.exit(code);
+  });
+
+  return concurrentProcess;
 }
 
-// Handle Ctrl+C
-process.on('SIGINT', () => {
-  console.log('\n\n👋 Shutting down all services...');
-  dockerProcess.kill();
-  process.exit(0);
-});
+// Main execution
+(async () => {
+  try {
+    const infraReady = await startInfrastructure();
 
-// Wait for infrastructure to be ready (timeout after 30 seconds)
-setTimeout(() => {
-  if (!servicesStarted) {
-    console.log('⏱️  Infrastructure took too long to start. Check Docker logs.');
-    console.log('You may need to manually start services or check for port conflicts.\n');
-    dockerProcess.kill();
+    if (!infraReady) {
+      console.log('⏱️  Infrastructure took too long to start. Check Docker logs.');
+      console.log('You may need to manually start services or check for port conflicts.\n');
+      process.exit(1);
+    }
+
+    const appProcess = startAppServices();
+
+    // Handle Ctrl+C
+    process.on('SIGINT', () => {
+      console.log('\n\n👋 Shutting down all services...');
+      appProcess.kill();
+      exec('docker-compose stop postgres redis');
+      process.exit(0);
+    });
+  } catch (error) {
+    console.error('Error starting services:', error);
     process.exit(1);
   }
-}, 30000);
+})();

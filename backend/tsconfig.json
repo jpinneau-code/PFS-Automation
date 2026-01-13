@@ -1,14 +1,20 @@
 {
-  "extends": "@adonisjs/core/tsconfig.json",
   "compilerOptions": {
-    "rootDir": "./",
-    "outDir": "./build",
-    "paths": {
-      "#config/*": ["./config/*.js"],
-      "#contracts/*": ["./contracts/*.js"],
-      "#models/*": ["./app/Models/*.js"],
-      "#controllers/*": ["./app/Controllers/*.js"],
-      "#middleware/*": ["./app/Middleware/*.js"]
-    }
-  }
+    "target": "ES2020",
+    "module": "ESNext",
+    "lib": ["ES2020"],
+    "moduleResolution": "node",
+    "outDir": "./dist",
+    "rootDir": "./src",
+    "strict": true,
+    "esModuleInterop": true,
+    "skipLibCheck": true,
+    "forceConsistentCasingInFileNames": true,
+    "resolveJsonModule": true,
+    "declaration": true,
+    "declarationMap": true,
+    "sourceMap": true
+  },
+  "include": ["src/**/*"],
+  "exclude": ["node_modules", "dist"]
 }
