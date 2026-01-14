@@ -3,6 +3,7 @@
 import { useEffect, useState, useRef } from 'react'
 import { useRouter, useParams } from 'next/navigation'
 import RichTextEditor from '@/components/RichTextEditor'
+import GanttChart from '@/components/GanttChart'
 
 interface User {
   id: number
@@ -772,14 +773,11 @@ export default function ProjectFollowUpPage() {
 
   // Get earliest start date from all tasks in a stage (including subtasks)
   const getStageStartDate = (stage: Stage): string | null => {
-    let earliest: Date | null = null
+    const dates: Date[] = []
 
     const checkTask = (task: Task) => {
       if (task.start_date) {
-        const date = new Date(task.start_date)
-        if (!earliest || date < earliest) {
-          earliest = date
-        }
+        dates.push(new Date(task.start_date))
       }
       if (task.subtasks) {
         task.subtasks.forEach(checkTask)
@@ -787,19 +785,17 @@ export default function ProjectFollowUpPage() {
     }
 
     stage.tasks.forEach(checkTask)
-    return earliest ? earliest.toISOString() : null
+    if (dates.length === 0) return null
+    return new Date(Math.min(...dates.map(d => d.getTime()))).toISOString()
   }
 
   // Get latest end date from all tasks in a stage (including subtasks)
   const getStageEndDate = (stage: Stage): string | null => {
-    let latest: Date | null = null
+    const dates: Date[] = []
 
     const checkTask = (task: Task) => {
       if (task.due_date) {
-        const date = new Date(task.due_date)
-        if (!latest || date > latest) {
-          latest = date
-        }
+        dates.push(new Date(task.due_date))
       }
       if (task.subtasks) {
         task.subtasks.forEach(checkTask)
@@ -807,7 +803,8 @@ export default function ProjectFollowUpPage() {
     }
 
     stage.tasks.forEach(checkTask)
-    return latest ? latest.toISOString() : null
+    if (dates.length === 0) return null
+    return new Date(Math.max(...dates.map(d => d.getTime()))).toISOString()
   }
 
   // Get earliest start date from a task's subtasks (for parent tasks)
@@ -815,20 +812,18 @@ export default function ProjectFollowUpPage() {
     if (!task.subtasks || task.subtasks.length === 0) {
       return task.start_date
     }
-    let earliest: Date | null = null
+    const dates: Date[] = []
     const checkSubtask = (subtask: Task) => {
       if (subtask.start_date) {
-        const date = new Date(subtask.start_date)
-        if (!earliest || date < earliest) {
-          earliest = date
-        }
+        dates.push(new Date(subtask.start_date))
       }
       if (subtask.subtasks) {
         subtask.subtasks.forEach(checkSubtask)
       }
     }
     task.subtasks.forEach(checkSubtask)
-    return earliest ? earliest.toISOString() : null
+    if (dates.length === 0) return null
+    return new Date(Math.min(...dates.map(d => d.getTime()))).toISOString()
   }
 
   // Get latest end date from a task's subtasks (for parent tasks)
@@ -836,20 +831,18 @@ export default function ProjectFollowUpPage() {
     if (!task.subtasks || task.subtasks.length === 0) {
       return task.due_date
     }
-    let latest: Date | null = null
+    const dates: Date[] = []
     const checkSubtask = (subtask: Task) => {
       if (subtask.due_date) {
-        const date = new Date(subtask.due_date)
-        if (!latest || date > latest) {
-          latest = date
-        }
+        dates.push(new Date(subtask.due_date))
       }
       if (subtask.subtasks) {
         subtask.subtasks.forEach(checkSubtask)
       }
     }
     task.subtasks.forEach(checkSubtask)
-    return latest ? latest.toISOString() : null
+    if (dates.length === 0) return null
+    return new Date(Math.max(...dates.map(d => d.getTime()))).toISOString()
   }
 
   // Format days for display (remove unnecessary decimals)
@@ -1035,6 +1028,37 @@ export default function ProjectFollowUpPage() {
             </span>
           )}
         </td>
+        <td className="py-2 px-4 text-sm text-gray-600 text-center">
+          {hasSubtasks ? (
+            <span className="text-gray-500 px-2 py-1" title="Sum of subtasks">
+              {formatDays(calculateTaskTotalDays(task))}d
+            </span>
+          ) : editingDaysTaskId === task.id ? (
+            <input
+              type="number"
+              step="0.5"
+              min="0"
+              value={editingDaysValue}
+              onChange={(e) => setEditingDaysValue(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter') handleSaveDays(task.id)
+                if (e.key === 'Escape') { setEditingDaysTaskId(null); setEditingDaysValue(''); }
+              }}
+              onBlur={() => handleSaveDays(task.id)}
+              className="w-16 px-2 py-1 text-sm text-center border border-indigo-300 rounded focus:outline-none focus:ring-2 focus:ring-indigo-500"
+              autoFocus
+              onClick={(e) => e.stopPropagation()}
+            />
+          ) : (
+            <span
+              onClick={(e) => startEditingDays(task, e)}
+              className="cursor-pointer hover:bg-indigo-50 hover:text-indigo-600 px-2 py-1 rounded transition-colors"
+              title="Click to edit"
+            >
+              {task.sold_days ? `${formatDays(Number(task.sold_days))}d` : '-'}
+            </span>
+          )}
+        </td>
         <td className="py-2 px-4 text-center">{getStatusBadge(task.status)}</td>
         <td className="py-2 px-4 text-sm text-gray-600">
           {hasSubtasks ? (
@@ -1067,37 +1091,6 @@ export default function ProjectFollowUpPage() {
               title="Click to edit"
             >
               {task.assigned_first_name ? `${task.assigned_first_name} ${task.assigned_last_name || ''}` : task.assigned_username || '-'}
-            </span>
-          )}
-        </td>
-        <td className="py-2 px-4 text-sm text-gray-600 text-right">
-          {hasSubtasks ? (
-            <span className="text-gray-500 px-2 py-1" title="Sum of subtasks">
-              {formatDays(calculateTaskTotalDays(task))}d
-            </span>
-          ) : editingDaysTaskId === task.id ? (
-            <input
-              type="number"
-              step="0.5"
-              min="0"
-              value={editingDaysValue}
-              onChange={(e) => setEditingDaysValue(e.target.value)}
-              onKeyDown={(e) => {
-                if (e.key === 'Enter') handleSaveDays(task.id)
-                if (e.key === 'Escape') { setEditingDaysTaskId(null); setEditingDaysValue(''); }
-              }}
-              onBlur={() => handleSaveDays(task.id)}
-              className="w-16 px-2 py-1 text-sm text-right border border-indigo-300 rounded focus:outline-none focus:ring-2 focus:ring-indigo-500"
-              autoFocus
-              onClick={(e) => e.stopPropagation()}
-            />
-          ) : (
-            <span
-              onClick={(e) => startEditingDays(task, e)}
-              className="cursor-pointer hover:bg-indigo-50 hover:text-indigo-600 px-2 py-1 rounded transition-colors"
-              title="Click to edit"
-            >
-              {task.sold_days ? `${formatDays(Number(task.sold_days))}d` : '-'}
             </span>
           )}
         </td>
@@ -1201,6 +1194,11 @@ export default function ProjectFollowUpPage() {
           {formatDateForDisplay(getStageEndDate(stage))}
         </td>
         <td className="py-3 px-4 text-center">
+          <span className="text-sm font-medium text-indigo-600 bg-indigo-100 px-2 py-0.5 rounded">
+            {formatDays(calculateStageTotalDays(stage))}d
+          </span>
+        </td>
+        <td className="py-3 px-4 text-center">
           <div className="flex items-center justify-center gap-2">
             <span className="text-sm text-indigo-700">{stage.completed_task_count}/{stage.task_count}</span>
             <div className="w-16 bg-indigo-200 rounded-full h-2">
@@ -1210,11 +1208,6 @@ export default function ProjectFollowUpPage() {
           </div>
         </td>
         <td className="py-3 px-4"></td>
-        <td className="py-3 px-4 text-right">
-          <span className="text-sm font-medium text-indigo-600 bg-indigo-100 px-2 py-0.5 rounded">
-            {formatDays(calculateStageTotalDays(stage))}d
-          </span>
-        </td>
       </tr>
     )
 
@@ -1383,24 +1376,26 @@ export default function ProjectFollowUpPage() {
       </header>
 
       {/* Main Content */}
-      <main className="max-w-7xl mx-auto py-6 px-4 sm:px-6 lg:px-8">
+      <main className="py-6 px-4 sm:px-6 lg:px-8">
         {project?.description && (
           <div className="bg-white shadow rounded-lg p-4 mb-6">
             <p className="text-gray-600">{project.description}</p>
           </div>
         )}
 
-        {/* Table */}
-        <div className="bg-white shadow rounded-lg overflow-hidden">
-          <table className="w-full">
+        {/* Split Layout: Table + Gantt */}
+        <div className="flex gap-4">
+          {/* Left Panel: Table */}
+          <div className="flex-shrink-0 bg-white shadow rounded-lg overflow-hidden" style={{ width: '750px' }}>
+            <table className="w-full">
             <thead className="bg-gray-100 border-b border-gray-200">
               <tr>
                 <th className="py-3 px-4 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Workload</th>
                 <th className="py-3 px-4 text-center text-xs font-medium text-gray-500 uppercase tracking-wider w-24">Start</th>
                 <th className="py-3 px-4 text-center text-xs font-medium text-gray-500 uppercase tracking-wider w-24">End</th>
+                <th className="py-3 px-4 text-center text-xs font-medium text-gray-500 uppercase tracking-wider w-20">Estimated</th>
                 <th className="py-3 px-4 text-center text-xs font-medium text-gray-500 uppercase tracking-wider w-28">Status</th>
                 <th className="py-3 px-4 text-left text-xs font-medium text-gray-500 uppercase tracking-wider w-44">Assigned</th>
-                <th className="py-3 px-4 text-right text-xs font-medium text-gray-500 uppercase tracking-wider w-20">Estimated</th>
               </tr>
             </thead>
             <tbody className="[&_tr]:group">
@@ -1471,6 +1466,18 @@ export default function ProjectFollowUpPage() {
               )}
             </tbody>
           </table>
+          </div>
+
+          {/* Right Panel: Gantt Chart */}
+          <div className="flex-1 bg-white shadow rounded-lg overflow-hidden min-w-0">
+            <GanttChart
+              stages={stages}
+              unstagedTasks={unstagedTasks}
+              weekStartsOn="monday"
+              onTaskClick={(task) => openEditPanel('task', task)}
+              onStageClick={(stage) => openEditPanel('stage', stage)}
+            />
+          </div>
         </div>
       </main>
 
