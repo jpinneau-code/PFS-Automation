@@ -9,7 +9,9 @@
     "build": "tsc",
     "start": "node dist/index.js",
     "migrate": "tsx src/scripts/migrate.ts",
-    "seed": "tsx src/scripts/seed.ts"
+    "migrate:subtasks": "tsx src/scripts/add-subtasks.ts",
+    "seed": "tsx src/scripts/seed.ts",
+    "seed:subtasks": "tsx src/scripts/seed-subtasks.ts"
   },
   "dependencies": {
     "bcrypt": "^5.1.1",

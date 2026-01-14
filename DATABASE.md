@@ -154,13 +154,14 @@ Stores project stages/phases.
 
 ### 6. `tasks`
 
-Stores individual tasks.
+Stores individual tasks and subtasks (hierarchical structure).
 
 | Column | Type | Constraints | Description |
 |--------|------|-------------|-------------|
 | id | SERIAL | PRIMARY KEY | Unique task identifier |
 | stage_id | INTEGER | FOREIGN KEY (stages.id) ON DELETE RESTRICT | Parent stage (nullable) |
 | project_id | INTEGER | NOT NULL, FOREIGN KEY (projects.id) ON DELETE RESTRICT | Parent project |
+| **parent_task_id** | INTEGER | FOREIGN KEY (tasks.id) ON DELETE CASCADE | Parent task (NULL for main tasks, NOT NULL for subtasks) |
 | task_name | VARCHAR(255) | NOT NULL | Task name |
 | description | TEXT | | Task description |
 | sold_days | DECIMAL(10, 2) | NOT NULL, DEFAULT 0 | Estimated/sold days |
@@ -180,11 +181,55 @@ Stores individual tasks.
 - `idx_tasks_responsible_id` on `responsible_id`
 - `idx_tasks_status` on `status`
 - `idx_tasks_priority` on `priority`
+- `idx_tasks_parent_task_id` on `parent_task_id`
 
 **Constraints:**
 - `check_task_priority`: priority IN ('low', 'medium', 'high', 'urgent')
 - `check_task_status`: status IN ('todo', 'in_progress', 'review', 'done', 'blocked')
 - `check_sold_days`: sold_days >= 0
+
+**Subtasks (Hierarchical Structure):**
+- A **main task** has `parent_task_id = NULL`
+- A **subtask** has `parent_task_id = <parent_id>`
+- Subtasks **inherit** the `stage_id` from their parent task (handled at application level)
+- Subtasks can have their own subtasks (recursive hierarchy supported)
+- When a parent task is deleted, all its subtasks are automatically deleted (CASCADE)
+
+**Example Hierarchy:**
+```
+Task 1 (parent_task_id = NULL, stage_id = 2)
+├── Subtask 1.1 (parent_task_id = 1, stage_id = NULL)
+│   └── Subtask 1.1.1 (parent_task_id = 1.1, stage_id = NULL)
+└── Subtask 1.2 (parent_task_id = 1, stage_id = NULL)
+```
+
+**Useful Queries:**
+```sql
+-- Get all main tasks (no parent)
+SELECT * FROM tasks WHERE parent_task_id IS NULL;
+
+-- Get all subtasks of a specific task
+SELECT * FROM tasks WHERE parent_task_id = 123;
+
+-- Get entire task hierarchy (recursive)
+WITH RECURSIVE task_tree AS (
+  SELECT *, 0 as level FROM tasks WHERE id = 123
+  UNION ALL
+  SELECT t.*, tt.level + 1
+  FROM tasks t
+  INNER JOIN task_tree tt ON t.parent_task_id = tt.id
+)
+SELECT * FROM task_tree ORDER BY level;
+
+-- Calculate total sold_days including subtasks
+WITH RECURSIVE task_subtasks AS (
+  SELECT * FROM tasks WHERE id = 123
+  UNION ALL
+  SELECT t.* FROM tasks t
+  INNER JOIN task_subtasks ts ON t.parent_task_id = ts.id
+)
+SELECT SUM(sold_days) as total_sold_days FROM task_subtasks;
+```
 
 ---
 
