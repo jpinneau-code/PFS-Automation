@@ -23,6 +23,10 @@ interface GanttChartProps {
   stages: Stage[]
   unstagedTasks: Task[]
   weekStartsOn: 'monday' | 'sunday'
+  expandedStages: Set<number>
+  expandedTasks: Set<number>
+  addingTaskInStage: number | null
+  addingSubtaskInTask: number | null
   onTaskClick?: (task: any) => void
   onStageClick?: (stage: any) => void
 }
@@ -166,12 +170,20 @@ export default function GanttChart({
   stages,
   unstagedTasks,
   weekStartsOn,
+  expandedStages,
+  expandedTasks,
+  addingTaskInStage,
+  addingSubtaskInTask,
   onTaskClick,
   onStageClick
 }: GanttChartProps) {
   const [startWeekOffset, setStartWeekOffset] = useState(0)
   const weeksToShow = 20
   const weekWidth = 60 // pixels per week
+
+  // Row heights to match table - must match py-3/py-2 in table rows
+  const stageRowHeight = 44 // matches py-3 px-4 stage row
+  const taskRowHeight = 36  // matches py-2 px-4 task row
 
   // Calculate the weeks to display
   const weeks = useMemo(() => {
@@ -190,10 +202,9 @@ export default function GanttChart({
   }, [weeks, weekStartsOn])
 
   // Render a bar for a task
-  const renderTaskBar = (task: Task, level: number = 0) => {
+  const renderTaskBar = (task: Task, isSubtask: boolean = false) => {
     const range = getTaskDateRange(task)
     const { left, width, visible } = calculateBarPosition(range.start, range.end, weeks, weekWidth)
-    const hasSubtasks = task.subtasks && task.subtasks.length > 0
 
     if (!visible) return null
 
@@ -204,7 +215,6 @@ export default function GanttChart({
         style={{
           left: `${left}px`,
           width: `${width}px`,
-          top: `${level > 0 ? 2 : 0}px`,
         }}
         onClick={(e) => {
           e.stopPropagation()
@@ -251,68 +261,140 @@ export default function GanttChart({
     )
   }
 
+  // Render task rows recursively (respecting expansion state)
+  const renderTaskRows = (tasks: Task[], level: number = 0, stageId?: number): React.ReactNode[] => {
+    const rows: React.ReactNode[] = []
+
+    tasks.forEach((task) => {
+      const hasSubtasks = task.subtasks && task.subtasks.length > 0
+      const isExpanded = expandedTasks.has(task.id)
+
+      // Task row
+      rows.push(
+        <div
+          key={`task-row-${task.id}`}
+          className={`relative border-b border-gray-100 ${level > 0 ? 'bg-gray-50/30' : ''}`}
+          style={{
+            width: `${weeksToShow * weekWidth}px`,
+            height: `${taskRowHeight}px`
+          }}
+        >
+          <div className="absolute inset-0 flex items-center">
+            {renderTaskBar(task, level > 0)}
+          </div>
+          {/* Week grid lines */}
+          <div className="absolute inset-0 flex pointer-events-none">
+            {weeks.map((_, i) => (
+              <div key={i} className="flex-shrink-0 border-r border-gray-50" style={{ width: `${weekWidth}px` }} />
+            ))}
+          </div>
+        </div>
+      )
+
+      // Subtask rows (only if expanded)
+      if (hasSubtasks && isExpanded) {
+        rows.push(...renderTaskRows(task.subtasks, level + 1))
+      }
+
+      // Add subtask input row if adding subtask to this task
+      if (addingSubtaskInTask === task.id) {
+        rows.push(
+          <div
+            key={`add-subtask-row-${task.id}`}
+            className="relative border-b border-gray-100 bg-indigo-50/30"
+            style={{
+              width: `${weeksToShow * weekWidth}px`,
+              height: `${taskRowHeight}px`
+            }}
+          >
+            <div className="absolute inset-0 flex pointer-events-none">
+              {weeks.map((_, i) => (
+                <div key={i} className="flex-shrink-0 border-r border-gray-50" style={{ width: `${weekWidth}px` }} />
+              ))}
+            </div>
+          </div>
+        )
+      }
+    })
+
+    return rows
+  }
+
+  // Render empty row (for "No tasks" or "Add task" placeholders)
+  const renderEmptyRow = (key: string, bgClass: string = '') => (
+    <div
+      key={key}
+      className={`relative border-b border-gray-100 ${bgClass}`}
+      style={{
+        width: `${weeksToShow * weekWidth}px`,
+        height: `${taskRowHeight}px`
+      }}
+    >
+      <div className="absolute inset-0 flex pointer-events-none">
+        {weeks.map((_, i) => (
+          <div key={i} className="flex-shrink-0 border-r border-gray-50" style={{ width: `${weekWidth}px` }} />
+        ))}
+      </div>
+    </div>
+  )
+
   return (
     <div className="flex flex-col h-full">
       {/* Navigation */}
-      <div className="flex items-center justify-between px-4 py-2 bg-gray-100 border-b border-gray-200">
-        <div className="flex items-center gap-2">
-          <button
-            onClick={() => setStartWeekOffset(prev => prev - 20)}
-            className="px-2 py-1 text-xs bg-white border border-gray-300 rounded hover:bg-gray-50"
-            title="Previous 20 weeks"
-          >
-            ◀◀ -20
-          </button>
-          <button
-            onClick={() => setStartWeekOffset(prev => prev - 4)}
-            className="px-2 py-1 text-xs bg-white border border-gray-300 rounded hover:bg-gray-50"
-            title="Previous 4 weeks"
-          >
-            ◀ -4
-          </button>
-          <button
-            onClick={() => setStartWeekOffset(0)}
-            className={`px-3 py-1 text-xs border rounded ${isCurrentWeekVisible ? 'bg-indigo-100 border-indigo-300 text-indigo-700' : 'bg-white border-gray-300 hover:bg-gray-50'}`}
-            title="Go to current week"
-          >
-            Today
-          </button>
-          <button
-            onClick={() => setStartWeekOffset(prev => prev + 4)}
-            className="px-2 py-1 text-xs bg-white border border-gray-300 rounded hover:bg-gray-50"
-            title="Next 4 weeks"
-          >
-            +4 ▶
-          </button>
-          <button
-            onClick={() => setStartWeekOffset(prev => prev + 20)}
-            className="px-2 py-1 text-xs bg-white border border-gray-300 rounded hover:bg-gray-50"
-            title="Next 20 weeks"
-          >
-            +20 ▶▶
-          </button>
-        </div>
-        <div className="text-sm text-gray-600">
-          {formatWeekHeader(weeks[0])} → {formatWeekHeader(weeks[weeks.length - 1])}
-        </div>
+      <div className="flex items-center gap-2 px-4 bg-gray-100 border-b border-gray-200 h-[34px]">
+        <button
+          onClick={() => setStartWeekOffset(prev => prev - 20)}
+          className="px-2 py-1 text-xs bg-white border border-gray-300 rounded hover:bg-gray-50"
+          title="Previous 20 weeks"
+        >
+          ◀◀ -20
+        </button>
+        <button
+          onClick={() => setStartWeekOffset(prev => prev - 4)}
+          className="px-2 py-1 text-xs bg-white border border-gray-300 rounded hover:bg-gray-50"
+          title="Previous 4 weeks"
+        >
+          ◀ -4
+        </button>
+        <button
+          onClick={() => setStartWeekOffset(0)}
+          className={`px-3 py-1 text-xs border rounded ${isCurrentWeekVisible ? 'bg-indigo-100 border-indigo-300 text-indigo-700' : 'bg-white border-gray-300 hover:bg-gray-50'}`}
+          title="Go to current week"
+        >
+          Today
+        </button>
+        <button
+          onClick={() => setStartWeekOffset(prev => prev + 4)}
+          className="px-2 py-1 text-xs bg-white border border-gray-300 rounded hover:bg-gray-50"
+          title="Next 4 weeks"
+        >
+          +4 ▶
+        </button>
+        <button
+          onClick={() => setStartWeekOffset(prev => prev + 20)}
+          className="px-2 py-1 text-xs bg-white border border-gray-300 rounded hover:bg-gray-50"
+          title="Next 20 weeks"
+        >
+          +20 ▶▶
+        </button>
       </div>
 
       {/* Gantt content */}
-      <div className="flex-1 overflow-auto">
+      <div className="flex-1 overflow-x-auto overflow-y-hidden">
         {/* Week headers */}
-        <div className="sticky top-0 z-10 flex bg-gray-50 border-b border-gray-200">
+        <div className="sticky top-0 z-10 flex bg-gray-50 border-b border-gray-200 h-[44px]">
           {weeks.map((week, i) => {
             const isCurrentWeek = getWeekStart(new Date(), weekStartsOn).getTime() === week.getTime()
             return (
               <div
                 key={i}
-                className={`flex-shrink-0 px-1 py-2 text-center text-xs border-r border-gray-200 ${isCurrentWeek ? 'bg-indigo-100 font-medium text-indigo-700' : 'text-gray-600'}`}
+                className={`flex-shrink-0 px-1 flex flex-col items-center justify-center text-xs border-r border-gray-200 ${isCurrentWeek ? 'bg-indigo-100 font-medium text-indigo-700' : 'text-gray-600'}`}
                 style={{ width: `${weekWidth}px` }}
               >
-                S{getWeekNumber(week)}
-                <div className="text-[10px] text-gray-400">
+                <span>S{getWeekNumber(week)}</span>
+                <span className="text-[10px] text-gray-400">
                   {week.getDate().toString().padStart(2, '0')}/{(week.getMonth() + 1).toString().padStart(2, '0')}
-                </div>
+                </span>
               </div>
             )
           })}
@@ -320,16 +402,64 @@ export default function GanttChart({
 
         {/* Rows */}
         <div>
-          {stages.map((stage, stageIndex) => (
-            <React.Fragment key={`stage-group-${stage.id}`}>
-              {/* Stage row */}
-              <div
-                className="relative h-10 border-b border-indigo-200 bg-indigo-50/50"
-                style={{ width: `${weeksToShow * weekWidth}px` }}
-              >
-                <div className="absolute inset-0 flex items-center">
-                  {renderStageBar(stage)}
+          {stages.map((stage) => {
+            const isStageExpanded = expandedStages.has(stage.id)
+            const hasNoTasks = stage.tasks.length === 0
+            const isAddingTaskHere = addingTaskInStage === stage.id
+
+            return (
+              <React.Fragment key={`stage-group-${stage.id}`}>
+                {/* Stage row */}
+                <div
+                  className="relative border-b border-indigo-200 bg-indigo-50/50"
+                  style={{
+                    width: `${weeksToShow * weekWidth}px`,
+                    height: `${stageRowHeight}px`
+                  }}
+                >
+                  <div className="absolute inset-0 flex items-center">
+                    {renderStageBar(stage)}
+                  </div>
+                  {/* Week grid lines */}
+                  <div className="absolute inset-0 flex pointer-events-none">
+                    {weeks.map((_, i) => (
+                      <div key={i} className="flex-shrink-0 border-r border-gray-100" style={{ width: `${weekWidth}px` }} />
+                    ))}
+                  </div>
                 </div>
+
+                {/* Content when stage is expanded */}
+                {isStageExpanded && (
+                  <>
+                    {/* Empty stage placeholder row OR task rows */}
+                    {hasNoTasks && !isAddingTaskHere ? (
+                      renderEmptyRow(`empty-stage-${stage.id}`)
+                    ) : (
+                      renderTaskRows(stage.tasks, 0, stage.id)
+                    )}
+
+                    {/* Add task input row or button row */}
+                    {isAddingTaskHere ? (
+                      renderEmptyRow(`add-task-${stage.id}`, 'bg-green-50/30')
+                    ) : !hasNoTasks ? (
+                      renderEmptyRow(`add-task-btn-${stage.id}`)
+                    ) : null}
+                  </>
+                )}
+              </React.Fragment>
+            )
+          })}
+
+          {/* Unstaged tasks header (if any) */}
+          {unstagedTasks.length > 0 && (
+            <>
+              <div
+                className="relative border-b border-gray-300 bg-gray-100"
+                style={{
+                  width: `${weeksToShow * weekWidth}px`,
+                  height: `${stageRowHeight}px`
+                }}
+              >
                 {/* Week grid lines */}
                 <div className="absolute inset-0 flex pointer-events-none">
                   {weeks.map((_, i) => (
@@ -337,77 +467,7 @@ export default function GanttChart({
                   ))}
                 </div>
               </div>
-
-              {/* Task rows */}
-              {stage.tasks.map((task) => (
-                <React.Fragment key={`task-group-${task.id}`}>
-                  {/* Task row */}
-                  <div
-                    className="relative h-8 border-b border-gray-100"
-                    style={{ width: `${weeksToShow * weekWidth}px` }}
-                  >
-                    <div className="absolute inset-0 flex items-center">
-                      {renderTaskBar(task)}
-                    </div>
-                    {/* Week grid lines */}
-                    <div className="absolute inset-0 flex pointer-events-none">
-                      {weeks.map((_, i) => (
-                        <div key={i} className="flex-shrink-0 border-r border-gray-50" style={{ width: `${weekWidth}px` }} />
-                      ))}
-                    </div>
-                  </div>
-
-                  {/* Subtask rows */}
-                  {task.subtasks?.map((subtask) => (
-                    <div
-                      key={`subtask-${subtask.id}`}
-                      className="relative h-7 border-b border-gray-50 bg-gray-50/30"
-                      style={{ width: `${weeksToShow * weekWidth}px` }}
-                    >
-                      <div className="absolute inset-0 flex items-center pl-4">
-                        {renderTaskBar(subtask, 1)}
-                      </div>
-                      {/* Week grid lines */}
-                      <div className="absolute inset-0 flex pointer-events-none">
-                        {weeks.map((_, i) => (
-                          <div key={i} className="flex-shrink-0 border-r border-gray-50" style={{ width: `${weekWidth}px` }} />
-                        ))}
-                      </div>
-                    </div>
-                  ))}
-                </React.Fragment>
-              ))}
-            </React.Fragment>
-          ))}
-
-          {/* Unstaged tasks */}
-          {unstagedTasks.length > 0 && (
-            <>
-              <div
-                className="relative h-10 border-b border-gray-300 bg-gray-100"
-                style={{ width: `${weeksToShow * weekWidth}px` }}
-              >
-                <div className="absolute inset-0 flex items-center px-2">
-                  <span className="text-sm font-medium text-gray-500">Unstaged Tasks</span>
-                </div>
-              </div>
-              {unstagedTasks.map((task) => (
-                <div
-                  key={`unstaged-${task.id}`}
-                  className="relative h-8 border-b border-gray-100"
-                  style={{ width: `${weeksToShow * weekWidth}px` }}
-                >
-                  <div className="absolute inset-0 flex items-center">
-                    {renderTaskBar(task)}
-                  </div>
-                  {/* Week grid lines */}
-                  <div className="absolute inset-0 flex pointer-events-none">
-                    {weeks.map((_, i) => (
-                      <div key={i} className="flex-shrink-0 border-r border-gray-50" style={{ width: `${weekWidth}px` }} />
-                    ))}
-                  </div>
-                </div>
-              ))}
+              {renderTaskRows(unstagedTasks)}
             </>
           )}
         </div>

@@ -204,6 +204,15 @@ export default function DashboardPage() {
               Welcome, {user.first_name || user.username}
             </span>
             <button
+              onClick={() => router.push('/timesheet')}
+              className="px-4 py-2 text-sm font-medium text-white bg-indigo-600 rounded-md hover:bg-indigo-700 transition-colors flex items-center gap-2"
+            >
+              <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" />
+              </svg>
+              Timesheet
+            </button>
+            <button
               onClick={handleLogout}
               className="px-4 py-2 text-sm font-medium text-gray-700 bg-white border border-gray-300 rounded-md hover:bg-gray-50 transition-colors"
             >
@@ -429,23 +438,24 @@ export default function DashboardPage() {
         </div>
 
         {/* Quick Actions */}
-        <div className="bg-white shadow rounded-lg p-6">
-          <h2 className="text-xl font-semibold text-gray-900 mb-4">Quick Actions</h2>
-          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
-            <button className="px-4 py-3 border border-gray-300 rounded-md text-left hover:bg-gray-50 transition-colors">
-              <div className="font-medium text-gray-900">Create New User</div>
-              <div className="text-sm text-gray-500">Add a new user to the system</div>
-            </button>
-            <button className="px-4 py-3 border border-gray-300 rounded-md text-left hover:bg-gray-50 transition-colors">
-              <div className="font-medium text-gray-900">View Projects</div>
-              <div className="text-sm text-gray-500">Manage your projects</div>
-            </button>
-            <button className="px-4 py-3 border border-gray-300 rounded-md text-left hover:bg-gray-50 transition-colors">
-              <div className="font-medium text-gray-900">System Settings</div>
-              <div className="text-sm text-gray-500">Configure application settings</div>
-            </button>
+        {user?.user_type === 'administrator' && (
+          <div className="bg-white shadow rounded-lg p-6">
+            <h2 className="text-xl font-semibold text-gray-900 mb-4">Quick Actions</h2>
+            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
+              <button
+                onClick={() => router.push('/users')}
+                className="px-4 py-3 border border-gray-300 rounded-md text-left hover:bg-gray-50 transition-colors"
+              >
+                <div className="font-medium text-gray-900">Gérer les utilisateurs</div>
+                <div className="text-sm text-gray-500">Ajouter, modifier ou supprimer des utilisateurs</div>
+              </button>
+              <button className="px-4 py-3 border border-gray-300 rounded-md text-left hover:bg-gray-50 transition-colors">
+                <div className="font-medium text-gray-900">Paramètres système</div>
+                <div className="text-sm text-gray-500">Configurer l'application</div>
+              </button>
+            </div>
           </div>
-        </div>
+        )}
       </main>
 
       {/* Add Project Modal */}

@@ -170,6 +170,135 @@ export const usersAPI = {
   },
 }
 
+// Admin Users API functions
+export const adminUsersAPI = {
+  getAll: async () => {
+    const response = await api.get('/api/admin/users')
+    return response.data
+  },
+
+  create: async (data: {
+    email: string
+    username: string
+    password: string
+    first_name?: string
+    last_name?: string
+    user_type: 'administrator' | 'project_manager' | 'actor'
+    daily_work_hours?: number
+  }) => {
+    const response = await api.post('/api/admin/users', data)
+    return response.data
+  },
+
+  update: async (userId: number, data: {
+    email?: string
+    username?: string
+    password?: string
+    first_name?: string
+    last_name?: string
+    user_type?: 'administrator' | 'project_manager' | 'actor'
+    is_active?: boolean
+    daily_work_hours?: number
+  }) => {
+    const response = await api.put(`/api/admin/users/${userId}`, data)
+    return response.data
+  },
+
+  delete: async (userId: number) => {
+    const response = await api.delete(`/api/admin/users/${userId}`)
+    return response.data
+  },
+}
+
+// Timesheet API functions
+export const timesheetAPI = {
+  // Get timesheet data for a month
+  getData: async (userId: number, year: number, month: number, viewUserId?: number) => {
+    const params = new URLSearchParams({
+      user_id: userId.toString(),
+      year: year.toString(),
+      month: month.toString(),
+    })
+    if (viewUserId) {
+      params.append('view_user_id', viewUserId.toString())
+    }
+    const response = await api.get(`/api/timesheet?${params}`)
+    return response.data
+  },
+
+  // Create or update a timesheet entry
+  saveEntry: async (data: {
+    user_id: number
+    task_id: number
+    date: string
+    hours: number
+    description?: string
+    entered_by: number
+  }) => {
+    const response = await api.post('/api/timesheet/entries', data)
+    return response.data
+  },
+
+  // Delete a timesheet entry
+  deleteEntry: async (entryId: number, userId: number) => {
+    const response = await api.delete(`/api/timesheet/entries/${entryId}?user_id=${userId}`)
+    return response.data
+  },
+
+  // Lock a month
+  lockMonth: async (data: {
+    project_id?: number | null
+    year: number
+    month: number
+    locked_by: number
+  }) => {
+    const response = await api.post('/api/timesheet/locks', data)
+    return response.data
+  },
+
+  // Unlock a month
+  unlockMonth: async (lockId: number, userId: number) => {
+    const response = await api.delete(`/api/timesheet/locks/${lockId}?user_id=${userId}`)
+    return response.data
+  },
+
+  // Get viewable users (for PM/Admin)
+  getViewableUsers: async (userId: number) => {
+    const response = await api.get(`/api/timesheet/viewable-users?user_id=${userId}`)
+    return response.data
+  },
+
+  // Update remaining hours on a task
+  updateRemainingHours: async (taskId: number, remainingHours: number, userId: number) => {
+    const response = await api.put(`/api/tasks/${taskId}/remaining`, {
+      remaining_hours: remainingHours,
+      user_id: userId
+    })
+    return response.data
+  },
+}
+
+// User Settings API functions
+export const userSettingsAPI = {
+  // Get all settings for a user
+  getAll: async (userId: number) => {
+    const response = await api.get(`/api/users/${userId}/settings`)
+    return response.data
+  },
+
+  // Update a single setting
+  update: async (userId: number, key: string, value: string) => {
+    const response = await api.put(`/api/users/${userId}/settings/${key}`, { value })
+    return response.data
+  },
+
+  // Delete a setting
+  delete: async (userId: number, key: string) => {
+    const response = await api.delete(`/api/users/${userId}/settings/${key}`)
+    return response.data
+  },
+}
+
 // Health check
 export const healthCheck = async () => {
   const response = await api.get('/health')

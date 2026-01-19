@@ -295,6 +295,127 @@ async function initDatabase() {
 
     console.log('  ✓ Tasks table ready (with subtasks support)')
 
+    // ============================================
+    // 7. Create timesheet_entries table
+    // ============================================
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS timesheet_entries (
+        id SERIAL PRIMARY KEY,
+        user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        task_id INTEGER NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+        date DATE NOT NULL,
+        hours DECIMAL(5, 2) NOT NULL DEFAULT 0,
+        description TEXT,
+        entered_by INTEGER NOT NULL REFERENCES users(id) ON DELETE SET NULL,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP NOT NULL,
+        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP NOT NULL,
+        CONSTRAINT check_hours CHECK (hours >= 0 AND hours <= 24),
+        CONSTRAINT unique_user_task_date UNIQUE (user_id, task_id, date)
+      )
+    `)
+
+    // Create indexes for timesheet_entries
+    await client.query(`
+      CREATE INDEX IF NOT EXISTS idx_timesheet_user_id ON timesheet_entries(user_id)
+    `)
+    await client.query(`
+      CREATE INDEX IF NOT EXISTS idx_timesheet_task_id ON timesheet_entries(task_id)
+    `)
+    await client.query(`
+      CREATE INDEX IF NOT EXISTS idx_timesheet_date ON timesheet_entries(date)
+    `)
+    await client.query(`
+      CREATE INDEX IF NOT EXISTS idx_timesheet_user_date ON timesheet_entries(user_id, date)
+    `)
+
+    console.log('  ✓ Timesheet entries table ready')
+
+    // ============================================
+    // 8. Create timesheet_locks table
+    // ============================================
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS timesheet_locks (
+        id SERIAL PRIMARY KEY,
+        project_id INTEGER REFERENCES projects(id) ON DELETE CASCADE,
+        year INTEGER NOT NULL,
+        month INTEGER NOT NULL,
+        locked_by INTEGER NOT NULL REFERENCES users(id) ON DELETE SET NULL,
+        locked_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP NOT NULL,
+        CONSTRAINT check_month CHECK (month >= 1 AND month <= 12),
+        CONSTRAINT unique_project_year_month UNIQUE (project_id, year, month)
+      )
+    `)
+
+    // Create index for timesheet_locks
+    await client.query(`
+      CREATE INDEX IF NOT EXISTS idx_timesheet_locks_year_month ON timesheet_locks(year, month)
+    `)
+
+    console.log('  ✓ Timesheet locks table ready')
+
+    // ============================================
+    // 9. Add remaining_hours column to tasks if not exists
+    // ============================================
+    await client.query(`
+      DO $$
+      BEGIN
+        IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'tasks' AND column_name = 'remaining_hours') THEN
+          ALTER TABLE tasks ADD COLUMN remaining_hours DECIMAL(10, 2);
+        END IF;
+      END $$
+    `)
+
+    console.log('  ✓ Tasks remaining_hours column ready')
+
+    // ============================================
+    // 9b. Add last_remaining_update_total column to tasks if not exists
+    // ============================================
+    await client.query(`
+      DO $$
+      BEGIN
+        IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'tasks' AND column_name = 'last_remaining_update_total') THEN
+          ALTER TABLE tasks ADD COLUMN last_remaining_update_total DECIMAL(10, 2);
+        END IF;
+      END $$
+    `)
+
+    console.log('  ✓ Tasks last_remaining_update_total column ready')
+
+    // ============================================
+    // 10. Add daily_work_hours column to users if not exists
+    // ============================================
+    await client.query(`
+      DO $$
+      BEGIN
+        IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'users' AND column_name = 'daily_work_hours') THEN
+          ALTER TABLE users ADD COLUMN daily_work_hours DECIMAL(4, 2) DEFAULT 8.0;
+        END IF;
+      END $$
+    `)
+
+    console.log('  ✓ Users daily_work_hours column ready')
+
+    // ============================================
+    // 11. Create user_settings table for user preferences
+    // ============================================
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS user_settings (
+        id SERIAL PRIMARY KEY,
+        user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        setting_key VARCHAR(100) NOT NULL,
+        setting_value TEXT,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP NOT NULL,
+        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP NOT NULL,
+        CONSTRAINT unique_user_setting UNIQUE (user_id, setting_key)
+      )
+    `)
+
+    await client.query(`
+      CREATE INDEX IF NOT EXISTS idx_user_settings_user_id ON user_settings(user_id)
+    `)
+
+    console.log('  ✓ User settings table ready')
+
     console.log('✅ Database schema initialized successfully')
   } catch (error) {
     console.error('Database initialization error:', error)
@@ -329,8 +450,8 @@ app.get('/api/users/:userId/projects', async (req, res) => {
 
     const user = userResult.rows[0]
 
-    let projectsQuery
-    let queryParams
+    let projectsQuery: string
+    let queryParams: any[]
 
     if (user.user_type === 'administrator') {
       // Administrator: get ALL projects
@@ -553,12 +674,12 @@ app.get('/api/projects/:projectId', async (req, res) => {
     const rootTasks: any[] = []
 
     // First pass: create all task objects
-    tasksResult.rows.forEach(task => {
+    tasksResult.rows.forEach((task: any) => {
       tasksMap.set(task.id, { ...task, subtasks: [] })
     })
 
     // Second pass: build hierarchy
-    tasksResult.rows.forEach(task => {
+    tasksResult.rows.forEach((task: any) => {
       const taskObj = tasksMap.get(task.id)
       if (task.parent_task_id) {
         const parent = tasksMap.get(task.parent_task_id)
@@ -571,7 +692,7 @@ app.get('/api/projects/:projectId', async (req, res) => {
     })
 
     // Group root tasks by stage
-    const stages = stagesResult.rows.map(stage => ({
+    const stages = stagesResult.rows.map((stage: any) => ({
       ...stage,
       tasks: rootTasks.filter(task => task.stage_id === stage.id)
     }))
@@ -631,16 +752,38 @@ app.put('/api/stages/:stageId', async (req, res) => {
   const { stage_name, description, start_date, end_date } = req.body
 
   try {
+    // Build update query dynamically to allow clearing values
+    const updates: string[] = []
+    const values: any[] = []
+    let paramCount = 1
+
+    if (stage_name !== undefined) {
+      updates.push(`stage_name = $${paramCount++}`)
+      values.push(stage_name)
+    }
+    if (description !== undefined) {
+      updates.push(`description = $${paramCount++}`)
+      values.push(description || null)
+    }
+    if (start_date !== undefined) {
+      updates.push(`start_date = $${paramCount++}`)
+      values.push(start_date || null)
+    }
+    if (end_date !== undefined) {
+      updates.push(`end_date = $${paramCount++}`)
+      values.push(end_date || null)
+    }
+
+    if (updates.length === 0) {
+      return res.status(400).json({ error: 'No fields to update' })
+    }
+
+    updates.push(`updated_at = CURRENT_TIMESTAMP`)
+    values.push(stageId)
+
     const result = await pool.query(
-      `UPDATE stages
-       SET stage_name = COALESCE($1, stage_name),
-           description = COALESCE($2, description),
-           start_date = COALESCE($3, start_date),
-           end_date = COALESCE($4, end_date),
-           updated_at = CURRENT_TIMESTAMP
-       WHERE id = $5
-       RETURNING *`,
-      [stage_name, description, start_date, end_date, stageId]
+      `UPDATE stages SET ${updates.join(', ')} WHERE id = $${paramCount} RETURNING *`,
+      values
     )
 
     if (result.rows.length === 0) {
@@ -850,6 +993,209 @@ app.get('/api/users/all', async (req, res) => {
   } catch (error) {
     console.error('Get all users error:', error)
     res.status(500).json({ error: 'Failed to fetch users' })
+  }
+})
+
+// ============================================
+// USERS CRUD (Admin only)
+// ============================================
+
+// Get all users (including inactive) for admin management
+app.get('/api/admin/users', async (req, res) => {
+  try {
+    const result = await pool.query(
+      `SELECT id, username, first_name, last_name, email, user_type, daily_work_hours, is_active, created_at, last_login_at
+       FROM users
+       ORDER BY created_at DESC`
+    )
+    res.json({ users: result.rows })
+  } catch (error) {
+    console.error('Get all users (admin) error:', error)
+    res.status(500).json({ error: 'Failed to fetch users' })
+  }
+})
+
+// Create a new user
+app.post('/api/admin/users', async (req, res) => {
+  const { email, username, password, first_name, last_name, user_type, daily_work_hours } = req.body
+
+  if (!email || !username || !password) {
+    return res.status(400).json({ error: 'Email, username, and password are required' })
+  }
+
+  if (password.length < 8) {
+    return res.status(400).json({ error: 'Password must be at least 8 characters long' })
+  }
+
+  const validUserTypes = ['administrator', 'project_manager', 'actor']
+  if (user_type && !validUserTypes.includes(user_type)) {
+    return res.status(400).json({ error: 'Invalid user type' })
+  }
+
+  // Validate daily_work_hours if provided
+  if (daily_work_hours !== undefined) {
+    const hours = parseFloat(daily_work_hours)
+    if (isNaN(hours) || hours < 1 || hours > 24) {
+      return res.status(400).json({ error: 'Daily work hours must be between 1 and 24' })
+    }
+  }
+
+  try {
+    // Check if email or username already exists
+    const existing = await pool.query(
+      'SELECT id FROM users WHERE email = $1 OR username = $2',
+      [email, username]
+    )
+
+    if (existing.rows.length > 0) {
+      return res.status(409).json({ error: 'Email or username already exists' })
+    }
+
+    // Hash password
+    const hashedPassword = await bcrypt.hash(password, 10)
+
+    const result = await pool.query(
+      `INSERT INTO users (email, username, password, first_name, last_name, user_type, daily_work_hours, is_active, created_at, updated_at)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, TRUE, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+       RETURNING id, email, username, first_name, last_name, user_type, daily_work_hours, is_active, created_at`,
+      [email, username, hashedPassword, first_name || null, last_name || null, user_type || 'actor', daily_work_hours || 8.0]
+    )
+
+    res.status(201).json({ user: result.rows[0] })
+  } catch (error) {
+    console.error('Create user error:', error)
+    res.status(500).json({ error: 'Failed to create user' })
+  }
+})
+
+// Update a user
+app.put('/api/admin/users/:userId', async (req, res) => {
+  const { userId } = req.params
+  const { email, username, password, first_name, last_name, user_type, is_active, daily_work_hours } = req.body
+
+  // Validate daily_work_hours if provided
+  if (daily_work_hours !== undefined) {
+    const hours = parseFloat(daily_work_hours)
+    if (isNaN(hours) || hours < 1 || hours > 24) {
+      return res.status(400).json({ error: 'Daily work hours must be between 1 and 24' })
+    }
+  }
+
+  try {
+    // Check if user exists
+    const userCheck = await pool.query('SELECT id FROM users WHERE id = $1', [userId])
+    if (userCheck.rows.length === 0) {
+      return res.status(404).json({ error: 'User not found' })
+    }
+
+    // Check for email/username conflicts
+    if (email || username) {
+      const existing = await pool.query(
+        'SELECT id FROM users WHERE (email = $1 OR username = $2) AND id != $3',
+        [email, username, userId]
+      )
+      if (existing.rows.length > 0) {
+        return res.status(409).json({ error: 'Email or username already exists' })
+      }
+    }
+
+    // Build update query dynamically
+    const updates: string[] = []
+    const values: any[] = []
+    let paramCount = 1
+
+    if (email !== undefined) {
+      updates.push(`email = $${paramCount++}`)
+      values.push(email)
+    }
+    if (username !== undefined) {
+      updates.push(`username = $${paramCount++}`)
+      values.push(username)
+    }
+    if (password !== undefined) {
+      if (password.length < 8) {
+        return res.status(400).json({ error: 'Password must be at least 8 characters long' })
+      }
+      const hashedPassword = await bcrypt.hash(password, 10)
+      updates.push(`password = $${paramCount++}`)
+      values.push(hashedPassword)
+    }
+    if (first_name !== undefined) {
+      updates.push(`first_name = $${paramCount++}`)
+      values.push(first_name || null)
+    }
+    if (last_name !== undefined) {
+      updates.push(`last_name = $${paramCount++}`)
+      values.push(last_name || null)
+    }
+    if (user_type !== undefined) {
+      const validUserTypes = ['administrator', 'project_manager', 'actor']
+      if (!validUserTypes.includes(user_type)) {
+        return res.status(400).json({ error: 'Invalid user type' })
+      }
+      updates.push(`user_type = $${paramCount++}`)
+      values.push(user_type)
+    }
+    if (is_active !== undefined) {
+      updates.push(`is_active = $${paramCount++}`)
+      values.push(is_active)
+    }
+    if (daily_work_hours !== undefined) {
+      updates.push(`daily_work_hours = $${paramCount++}`)
+      values.push(daily_work_hours)
+    }
+
+    if (updates.length === 0) {
+      return res.status(400).json({ error: 'No fields to update' })
+    }
+
+    updates.push(`updated_at = CURRENT_TIMESTAMP`)
+    values.push(userId)
+
+    const result = await pool.query(
+      `UPDATE users SET ${updates.join(', ')} WHERE id = $${paramCount}
+       RETURNING id, email, username, first_name, last_name, user_type, daily_work_hours, is_active, created_at`,
+      values
+    )
+
+    res.json({ user: result.rows[0] })
+  } catch (error) {
+    console.error('Update user error:', error)
+    res.status(500).json({ error: 'Failed to update user' })
+  }
+})
+
+// Delete a user (soft delete - deactivate)
+app.delete('/api/admin/users/:userId', async (req, res) => {
+  const { userId } = req.params
+
+  try {
+    // Check if user exists
+    const userCheck = await pool.query('SELECT id, user_type FROM users WHERE id = $1', [userId])
+    if (userCheck.rows.length === 0) {
+      return res.status(404).json({ error: 'User not found' })
+    }
+
+    // Check if this is the last administrator
+    if (userCheck.rows[0].user_type === 'administrator') {
+      const adminCount = await pool.query(
+        "SELECT COUNT(*) as count FROM users WHERE user_type = 'administrator' AND is_active = TRUE"
+      )
+      if (parseInt(adminCount.rows[0].count) <= 1) {
+        return res.status(400).json({ error: 'Cannot delete the last administrator' })
+      }
+    }
+
+    // Soft delete (deactivate)
+    await pool.query(
+      'UPDATE users SET is_active = FALSE, updated_at = CURRENT_TIMESTAMP WHERE id = $1',
+      [userId]
+    )
+
+    res.json({ message: 'User deactivated successfully' })
+  } catch (error) {
+    console.error('Delete user error:', error)
+    res.status(500).json({ error: 'Failed to delete user' })
   }
 })
 
@@ -1210,6 +1556,541 @@ app.post('/api/setup/complete', async (req, res) => {
     res.status(500).json({ error: 'Failed to complete setup' })
   } finally {
     client.release()
+  }
+})
+
+// ============================================
+// TIMESHEET API
+// ============================================
+
+// Helper function to check if user can edit timesheet for another user
+const canEditTimesheetFor = async (editorId: number, targetUserId: number, taskId: number): Promise<boolean> => {
+  // If editing own timesheet, always allowed
+  if (editorId === targetUserId) return true
+
+  // Check if editor is admin
+  const editorResult = await pool.query('SELECT user_type FROM users WHERE id = $1', [editorId])
+  if (editorResult.rows.length === 0) return false
+  const editorType = editorResult.rows[0].user_type
+
+  if (editorType === 'administrator') return true
+
+  // Check if editor is project manager of the task's project
+  if (editorType === 'project_manager') {
+    const taskResult = await pool.query(
+      `SELECT p.project_manager_id FROM tasks t
+       JOIN projects p ON t.project_id = p.id
+       WHERE t.id = $1`,
+      [taskId]
+    )
+    if (taskResult.rows.length > 0 && taskResult.rows[0].project_manager_id === editorId) {
+      return true
+    }
+  }
+
+  return false
+}
+
+// Get timesheet data for a user for a specific month
+app.get('/api/timesheet', async (req, res) => {
+  const { user_id, year, month, view_user_id } = req.query
+
+  if (!user_id || !year || !month) {
+    return res.status(400).json({ error: 'user_id, year, and month are required' })
+  }
+
+  const requestingUserId = parseInt(user_id as string)
+  const targetUserId = view_user_id ? parseInt(view_user_id as string) : requestingUserId
+  const yearNum = parseInt(year as string)
+  const monthNum = parseInt(month as string)
+
+  try {
+    // Check permissions if viewing another user's timesheet
+    if (targetUserId !== requestingUserId) {
+      const userResult = await pool.query('SELECT user_type FROM users WHERE id = $1', [requestingUserId])
+      if (userResult.rows.length === 0) {
+        return res.status(404).json({ error: 'User not found' })
+      }
+      const userType = userResult.rows[0].user_type
+      if (userType !== 'administrator' && userType !== 'project_manager') {
+        return res.status(403).json({ error: 'Not authorized to view other users timesheet' })
+      }
+    }
+
+    // Get all tasks assigned to the target user in non-closed projects, with total hours
+    const tasksResult = await pool.query(
+      `SELECT t.id as task_id, t.task_name, t.sold_days, t.remaining_hours, t.last_remaining_update_total,
+              p.id as project_id, p.project_name, p.status as project_status,
+              s.id as stage_id, s.stage_name,
+              COALESCE((SELECT SUM(te.hours) FROM timesheet_entries te WHERE te.task_id = t.id), 0) as total_hours
+       FROM tasks t
+       JOIN projects p ON t.project_id = p.id
+       LEFT JOIN stages s ON t.stage_id = s.id
+       WHERE t.responsible_id = $1
+         AND p.status != 'closed'
+       ORDER BY p.project_name, s.stage_order NULLS LAST, t.display_order`,
+      [targetUserId]
+    )
+
+    // Get timesheet entries for the month
+    const startDate = `${yearNum}-${String(monthNum).padStart(2, '0')}-01`
+    const endDate = new Date(yearNum, monthNum, 0).toISOString().split('T')[0] // Last day of month
+
+    const entriesResult = await pool.query(
+      `SELECT te.id, te.task_id, TO_CHAR(te.date, 'YYYY-MM-DD') as date, te.hours, te.description, te.entered_by,
+              u.username as entered_by_username
+       FROM timesheet_entries te
+       LEFT JOIN users u ON te.entered_by = u.id
+       WHERE te.user_id = $1
+         AND te.date >= $2
+         AND te.date <= $3
+       ORDER BY te.date`,
+      [targetUserId, startDate, endDate]
+    )
+
+    // Get locks for projects in the result
+    const projectIds = [...new Set(tasksResult.rows.map((t: any) => t.project_id))]
+    let locks: any[] = []
+    if (projectIds.length > 0) {
+      const locksResult = await pool.query(
+        `SELECT project_id, year, month, locked_by, locked_at
+         FROM timesheet_locks
+         WHERE (project_id = ANY($1) OR project_id IS NULL)
+           AND year = $2 AND month = $3`,
+        [projectIds, yearNum, monthNum]
+      )
+      locks = locksResult.rows
+    }
+
+    // Group tasks by project
+    const projectsMap = new Map<number, any>()
+    for (const task of tasksResult.rows) {
+      if (!projectsMap.has(task.project_id)) {
+        projectsMap.set(task.project_id, {
+          id: task.project_id,
+          name: task.project_name,
+          status: task.project_status,
+          tasks: []
+        })
+      }
+      projectsMap.get(task.project_id).tasks.push({
+        id: task.task_id,
+        name: task.task_name,
+        stage_id: task.stage_id,
+        stage_name: task.stage_name,
+        sold_days: parseFloat(task.sold_days) || 0,
+        remaining_hours: task.remaining_hours,
+        last_remaining_update_total: task.last_remaining_update_total,
+        total_hours: parseFloat(task.total_hours)
+      })
+    }
+
+    res.json({
+      user_id: targetUserId,
+      year: yearNum,
+      month: monthNum,
+      projects: Array.from(projectsMap.values()),
+      entries: entriesResult.rows,
+      locks
+    })
+  } catch (error) {
+    console.error('Get timesheet error:', error)
+    res.status(500).json({ error: 'Failed to fetch timesheet' })
+  }
+})
+
+// Create or update a timesheet entry
+app.post('/api/timesheet/entries', async (req, res) => {
+  const { user_id, task_id, date, hours, description, entered_by } = req.body
+
+  if (!user_id || !task_id || !date || hours === undefined || !entered_by) {
+    return res.status(400).json({ error: 'user_id, task_id, date, hours, and entered_by are required' })
+  }
+
+  const hoursNum = parseFloat(hours)
+  if (isNaN(hoursNum) || hoursNum < 0 || hoursNum > 24) {
+    return res.status(400).json({ error: 'Hours must be between 0 and 24' })
+  }
+
+  try {
+    // Check permissions
+    const canEdit = await canEditTimesheetFor(entered_by, user_id, task_id)
+    if (!canEdit) {
+      return res.status(403).json({ error: 'Not authorized to edit this timesheet entry' })
+    }
+
+    // Check if month is locked for this task's project
+    const taskResult = await pool.query(
+      'SELECT project_id FROM tasks WHERE id = $1',
+      [task_id]
+    )
+    if (taskResult.rows.length === 0) {
+      return res.status(404).json({ error: 'Task not found' })
+    }
+    const projectId = taskResult.rows[0].project_id
+
+    const entryDate = new Date(date)
+    const lockResult = await pool.query(
+      `SELECT id FROM timesheet_locks
+       WHERE (project_id = $1 OR project_id IS NULL)
+         AND year = $2 AND month = $3`,
+      [projectId, entryDate.getFullYear(), entryDate.getMonth() + 1]
+    )
+    if (lockResult.rows.length > 0) {
+      return res.status(403).json({ error: 'This month is locked for timesheet entries' })
+    }
+
+    // Upsert the entry
+    const result = await pool.query(
+      `INSERT INTO timesheet_entries (user_id, task_id, date, hours, description, entered_by, created_at, updated_at)
+       VALUES ($1, $2, $3, $4, $5, $6, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+       ON CONFLICT (user_id, task_id, date)
+       DO UPDATE SET hours = $4, description = $5, entered_by = $6, updated_at = CURRENT_TIMESTAMP
+       RETURNING id, user_id, task_id, TO_CHAR(date, 'YYYY-MM-DD') as date, hours, description, entered_by, created_at, updated_at`,
+      [user_id, task_id, date, hoursNum, description || null, entered_by]
+    )
+
+    res.json({ entry: result.rows[0] })
+  } catch (error) {
+    console.error('Create/update timesheet entry error:', error)
+    res.status(500).json({ error: 'Failed to save timesheet entry' })
+  }
+})
+
+// Delete a timesheet entry
+app.delete('/api/timesheet/entries/:id', async (req, res) => {
+  const { id } = req.params
+  const { user_id } = req.query // The user making the request
+
+  if (!user_id) {
+    return res.status(400).json({ error: 'user_id is required' })
+  }
+
+  try {
+    // Get the entry to check permissions
+    const entryResult = await pool.query(
+      'SELECT user_id, task_id, date FROM timesheet_entries WHERE id = $1',
+      [id]
+    )
+    if (entryResult.rows.length === 0) {
+      return res.status(404).json({ error: 'Entry not found' })
+    }
+
+    const entry = entryResult.rows[0]
+    const canEdit = await canEditTimesheetFor(parseInt(user_id as string), entry.user_id, entry.task_id)
+    if (!canEdit) {
+      return res.status(403).json({ error: 'Not authorized to delete this entry' })
+    }
+
+    // Check if month is locked
+    const taskResult = await pool.query('SELECT project_id FROM tasks WHERE id = $1', [entry.task_id])
+    const projectId = taskResult.rows[0]?.project_id
+    const entryDate = new Date(entry.date)
+
+    const lockResult = await pool.query(
+      `SELECT id FROM timesheet_locks
+       WHERE (project_id = $1 OR project_id IS NULL)
+         AND year = $2 AND month = $3`,
+      [projectId, entryDate.getFullYear(), entryDate.getMonth() + 1]
+    )
+    if (lockResult.rows.length > 0) {
+      return res.status(403).json({ error: 'This month is locked' })
+    }
+
+    await pool.query('DELETE FROM timesheet_entries WHERE id = $1', [id])
+    res.json({ message: 'Entry deleted successfully' })
+  } catch (error) {
+    console.error('Delete timesheet entry error:', error)
+    res.status(500).json({ error: 'Failed to delete entry' })
+  }
+})
+
+// Lock a month for a project (PM or Admin only)
+app.post('/api/timesheet/locks', async (req, res) => {
+  const { project_id, year, month, locked_by } = req.body
+
+  if (!year || !month || !locked_by) {
+    return res.status(400).json({ error: 'year, month, and locked_by are required' })
+  }
+
+  try {
+    // Check if user is authorized (admin or PM of the project)
+    const userResult = await pool.query('SELECT user_type FROM users WHERE id = $1', [locked_by])
+    if (userResult.rows.length === 0) {
+      return res.status(404).json({ error: 'User not found' })
+    }
+
+    const userType = userResult.rows[0].user_type
+    if (userType === 'actor') {
+      return res.status(403).json({ error: 'Not authorized to lock timesheet' })
+    }
+
+    // If project_id is specified, check PM ownership
+    if (project_id && userType === 'project_manager') {
+      const projectResult = await pool.query(
+        'SELECT project_manager_id FROM projects WHERE id = $1',
+        [project_id]
+      )
+      if (projectResult.rows.length === 0) {
+        return res.status(404).json({ error: 'Project not found' })
+      }
+      if (projectResult.rows[0].project_manager_id !== locked_by) {
+        return res.status(403).json({ error: 'Not authorized to lock this project' })
+      }
+    }
+
+    // Only admin can create global locks (project_id = null)
+    if (!project_id && userType !== 'administrator') {
+      return res.status(403).json({ error: 'Only administrators can create global locks' })
+    }
+
+    const result = await pool.query(
+      `INSERT INTO timesheet_locks (project_id, year, month, locked_by, locked_at)
+       VALUES ($1, $2, $3, $4, CURRENT_TIMESTAMP)
+       ON CONFLICT (project_id, year, month) DO NOTHING
+       RETURNING *`,
+      [project_id || null, year, month, locked_by]
+    )
+
+    if (result.rows.length === 0) {
+      return res.status(409).json({ error: 'This month is already locked' })
+    }
+
+    res.status(201).json({ lock: result.rows[0] })
+  } catch (error) {
+    console.error('Create timesheet lock error:', error)
+    res.status(500).json({ error: 'Failed to create lock' })
+  }
+})
+
+// Unlock a month (PM or Admin only)
+app.delete('/api/timesheet/locks/:id', async (req, res) => {
+  const { id } = req.params
+  const { user_id } = req.query
+
+  if (!user_id) {
+    return res.status(400).json({ error: 'user_id is required' })
+  }
+
+  try {
+    // Get the lock
+    const lockResult = await pool.query('SELECT * FROM timesheet_locks WHERE id = $1', [id])
+    if (lockResult.rows.length === 0) {
+      return res.status(404).json({ error: 'Lock not found' })
+    }
+
+    const lock = lockResult.rows[0]
+
+    // Check permissions
+    const userResult = await pool.query('SELECT user_type FROM users WHERE id = $1', [user_id])
+    if (userResult.rows.length === 0) {
+      return res.status(404).json({ error: 'User not found' })
+    }
+
+    const userType = userResult.rows[0].user_type
+    if (userType === 'actor') {
+      return res.status(403).json({ error: 'Not authorized' })
+    }
+
+    // Global locks can only be removed by admin
+    if (!lock.project_id && userType !== 'administrator') {
+      return res.status(403).json({ error: 'Only administrators can remove global locks' })
+    }
+
+    // PM can only unlock their own projects
+    if (lock.project_id && userType === 'project_manager') {
+      const projectResult = await pool.query(
+        'SELECT project_manager_id FROM projects WHERE id = $1',
+        [lock.project_id]
+      )
+      if (projectResult.rows[0]?.project_manager_id !== parseInt(user_id as string)) {
+        return res.status(403).json({ error: 'Not authorized to unlock this project' })
+      }
+    }
+
+    await pool.query('DELETE FROM timesheet_locks WHERE id = $1', [id])
+    res.json({ message: 'Lock removed successfully' })
+  } catch (error) {
+    console.error('Delete timesheet lock error:', error)
+    res.status(500).json({ error: 'Failed to remove lock' })
+  }
+})
+
+// Update remaining hours on a task
+app.put('/api/tasks/:taskId/remaining', async (req, res) => {
+  const { taskId } = req.params
+  const { remaining_hours, user_id } = req.body
+
+  if (remaining_hours === undefined || !user_id) {
+    return res.status(400).json({ error: 'remaining_hours and user_id are required' })
+  }
+
+  try {
+    // Check if task exists and user has permission
+    const taskResult = await pool.query(
+      `SELECT t.responsible_id, p.project_manager_id
+       FROM tasks t
+       JOIN projects p ON t.project_id = p.id
+       WHERE t.id = $1`,
+      [taskId]
+    )
+
+    if (taskResult.rows.length === 0) {
+      return res.status(404).json({ error: 'Task not found' })
+    }
+
+    const task = taskResult.rows[0]
+    const userResult = await pool.query('SELECT user_type FROM users WHERE id = $1', [user_id])
+    const userType = userResult.rows[0]?.user_type
+
+    // Permission: admin, PM of project, or assignee
+    const canUpdate = userType === 'administrator' ||
+                      task.project_manager_id === user_id ||
+                      task.responsible_id === user_id
+
+    if (!canUpdate) {
+      return res.status(403).json({ error: 'Not authorized to update remaining hours' })
+    }
+
+    // Calculate the current total timesheet hours for this task
+    const totalResult = await pool.query(
+      `SELECT COALESCE(SUM(hours), 0) as total_hours
+       FROM timesheet_entries
+       WHERE task_id = $1`,
+      [taskId]
+    )
+    const currentTotal = parseFloat(totalResult.rows[0].total_hours)
+
+    const result = await pool.query(
+      `UPDATE tasks SET remaining_hours = $1, last_remaining_update_total = $2, updated_at = CURRENT_TIMESTAMP
+       WHERE id = $3 RETURNING id, remaining_hours, last_remaining_update_total`,
+      [remaining_hours, currentTotal, taskId]
+    )
+
+    res.json({ task: result.rows[0] })
+  } catch (error) {
+    console.error('Update remaining hours error:', error)
+    res.status(500).json({ error: 'Failed to update remaining hours' })
+  }
+})
+
+// ============================================
+// USER SETTINGS API
+// ============================================
+
+// Get all settings for a user
+app.get('/api/users/:userId/settings', async (req, res) => {
+  const { userId } = req.params
+
+  try {
+    const result = await pool.query(
+      `SELECT setting_key, setting_value FROM user_settings WHERE user_id = $1`,
+      [userId]
+    )
+
+    // Convert to key-value object
+    const settings: Record<string, string> = {}
+    for (const row of result.rows) {
+      settings[row.setting_key] = row.setting_value
+    }
+
+    res.json({ settings })
+  } catch (error) {
+    console.error('Get user settings error:', error)
+    res.status(500).json({ error: 'Failed to fetch user settings' })
+  }
+})
+
+// Update a single setting for a user
+app.put('/api/users/:userId/settings/:key', async (req, res) => {
+  const { userId, key } = req.params
+  const { value } = req.body
+
+  if (value === undefined) {
+    return res.status(400).json({ error: 'value is required' })
+  }
+
+  try {
+    const result = await pool.query(
+      `INSERT INTO user_settings (user_id, setting_key, setting_value, created_at, updated_at)
+       VALUES ($1, $2, $3, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+       ON CONFLICT (user_id, setting_key)
+       DO UPDATE SET setting_value = $3, updated_at = CURRENT_TIMESTAMP
+       RETURNING setting_key, setting_value`,
+      [userId, key, value]
+    )
+
+    res.json({ setting: result.rows[0] })
+  } catch (error) {
+    console.error('Update user setting error:', error)
+    res.status(500).json({ error: 'Failed to update user setting' })
+  }
+})
+
+// Delete a setting for a user
+app.delete('/api/users/:userId/settings/:key', async (req, res) => {
+  const { userId, key } = req.params
+
+  try {
+    await pool.query(
+      `DELETE FROM user_settings WHERE user_id = $1 AND setting_key = $2`,
+      [userId, key]
+    )
+    res.json({ message: 'Setting deleted successfully' })
+  } catch (error) {
+    console.error('Delete user setting error:', error)
+    res.status(500).json({ error: 'Failed to delete user setting' })
+  }
+})
+
+// Get users that can be viewed by a PM (users assigned to their projects)
+app.get('/api/timesheet/viewable-users', async (req, res) => {
+  const { user_id } = req.query
+
+  if (!user_id) {
+    return res.status(400).json({ error: 'user_id is required' })
+  }
+
+  try {
+    const userResult = await pool.query('SELECT user_type FROM users WHERE id = $1', [user_id])
+    if (userResult.rows.length === 0) {
+      return res.status(404).json({ error: 'User not found' })
+    }
+
+    const userType = userResult.rows[0].user_type
+
+    let usersResult
+    if (userType === 'administrator') {
+      // Admin can view all users
+      usersResult = await pool.query(
+        `SELECT id, username, first_name, last_name, email, daily_work_hours
+         FROM users WHERE is_active = TRUE
+         ORDER BY first_name, last_name`
+      )
+    } else if (userType === 'project_manager') {
+      // PM can view users assigned to tasks in their projects
+      usersResult = await pool.query(
+        `SELECT DISTINCT u.id, u.username, u.first_name, u.last_name, u.email, u.daily_work_hours
+         FROM users u
+         JOIN tasks t ON t.responsible_id = u.id
+         JOIN projects p ON t.project_id = p.id
+         WHERE p.project_manager_id = $1 AND u.is_active = TRUE
+         ORDER BY u.first_name, u.last_name`,
+        [user_id]
+      )
+    } else {
+      // Actor can only view themselves
+      usersResult = await pool.query(
+        `SELECT id, username, first_name, last_name, email, daily_work_hours
+         FROM users WHERE id = $1`,
+        [user_id]
+      )
+    }
+
+    res.json({ users: usersResult.rows })
+  } catch (error) {
+    console.error('Get viewable users error:', error)
+    res.status(500).json({ error: 'Failed to fetch viewable users' })
   }
 })
 

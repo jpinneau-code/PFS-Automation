@@ -1,9 +1,43 @@
 'use client'
 
-import { useEffect, useState, useRef } from 'react'
+import { useEffect, useState, useRef, useMemo } from 'react'
 import { useRouter, useParams } from 'next/navigation'
 import RichTextEditor from '@/components/RichTextEditor'
-import GanttChart from '@/components/GanttChart'
+
+// Gantt utility functions
+const getWeekStart = (date: Date): Date => {
+  const d = new Date(date)
+  const day = d.getDay()
+  const diff = day === 0 ? -6 : 1 - day // Monday as start of week
+  d.setDate(d.getDate() + diff)
+  d.setHours(0, 0, 0, 0)
+  return d
+}
+
+const addWeeks = (date: Date, weeks: number): Date => {
+  const d = new Date(date)
+  d.setDate(d.getDate() + weeks * 7)
+  return d
+}
+
+const getWeekNumber = (date: Date): number => {
+  const d = new Date(Date.UTC(date.getFullYear(), date.getMonth(), date.getDate()))
+  const dayNum = d.getUTCDay() || 7
+  d.setUTCDate(d.getUTCDate() + 4 - dayNum)
+  const yearStart = new Date(Date.UTC(d.getUTCFullYear(), 0, 1))
+  return Math.ceil((((d.getTime() - yearStart.getTime()) / 86400000) + 1) / 7)
+}
+
+const getStatusColor = (status: string): string => {
+  switch (status) {
+    case 'todo': return 'bg-gray-400'
+    case 'in_progress': return 'bg-blue-500'
+    case 'review': return 'bg-purple-500'
+    case 'blocked': return 'bg-red-500'
+    case 'done': return 'bg-green-500'
+    default: return 'bg-gray-400'
+  }
+}
 
 interface User {
   id: number
@@ -117,6 +151,26 @@ export default function ProjectFollowUpPage() {
   // Inline edit state for Dates
   const [editingStartDateTaskId, setEditingStartDateTaskId] = useState<number | null>(null)
   const [editingEndDateTaskId, setEditingEndDateTaskId] = useState<number | null>(null)
+
+  // Gantt state
+  const [ganttWeekOffset, setGanttWeekOffset] = useState(0)
+  const weeksToShow = 20
+  const weekWidth = 50 // pixels per week column
+
+  // Calculate weeks array for Gantt
+  const ganttWeeks = useMemo(() => {
+    const today = new Date()
+    const currentWeekStart = getWeekStart(today)
+    const startDate = addWeeks(currentWeekStart, ganttWeekOffset)
+    return Array.from({ length: weeksToShow }, (_, i) => addWeeks(startDate, i))
+  }, [ganttWeekOffset])
+
+  // Check if current week is visible
+  const isCurrentWeekVisible = useMemo(() => {
+    const today = new Date()
+    const currentWeekStart = getWeekStart(today)
+    return ganttWeeks.some(w => w.getTime() === currentWeekStart.getTime())
+  }, [ganttWeeks])
 
   useEffect(() => {
     const userStr = localStorage.getItem('user')
@@ -771,6 +825,18 @@ export default function ProjectFollowUpPage() {
     return total
   }
 
+  // Calculate total days for the entire project
+  const calculateProjectTotalDays = (): number => {
+    let total = 0
+    for (const stage of stages) {
+      total += calculateStageTotalDays(stage)
+    }
+    for (const task of unstagedTasks) {
+      total += calculateTaskTotalDays(task)
+    }
+    return total
+  }
+
   // Get earliest start date from all tasks in a stage (including subtasks)
   const getStageStartDate = (stage: Stage): string | null => {
     const dates: Date[] = []
@@ -845,6 +911,90 @@ export default function ProjectFollowUpPage() {
     return new Date(Math.max(...dates.map(d => d.getTime()))).toISOString()
   }
 
+  // Calculate Gantt bar position for a date range
+  const calculateGanttBar = (startDate: string | null, endDate: string | null): { left: number; width: number; visible: boolean } => {
+    if (!startDate && !endDate) {
+      return { left: 0, width: 0, visible: false }
+    }
+
+    const firstWeekStart = ganttWeeks[0]
+    const lastWeekEnd = addWeeks(ganttWeeks[ganttWeeks.length - 1], 1)
+
+    const start = startDate ? new Date(startDate) : new Date(endDate!)
+    const end = endDate ? new Date(endDate) : new Date(startDate!)
+
+    // Check if bar is visible in current range
+    if (end < firstWeekStart || start >= lastWeekEnd) {
+      return { left: 0, width: 0, visible: false }
+    }
+
+    // Calculate position
+    const msPerWeek = 7 * 24 * 60 * 60 * 1000
+    const startOffset = Math.max(0, (start.getTime() - firstWeekStart.getTime()) / msPerWeek)
+    const endOffset = Math.min(weeksToShow, (end.getTime() - firstWeekStart.getTime()) / msPerWeek + 1)
+
+    const left = startOffset * weekWidth
+    const width = Math.max((endOffset - startOffset) * weekWidth - 2, 4)
+
+    return { left, width, visible: true }
+  }
+
+  // Render Gantt bar for a task
+  const renderGanttBar = (task: Task, isStage: boolean = false) => {
+    const startDate = isStage ? getStageStartDate(task as unknown as Stage) : getTaskStartDate(task)
+    const endDate = isStage ? getStageEndDate(task as unknown as Stage) : getTaskEndDate(task)
+    const { left, width, visible } = calculateGanttBar(startDate, endDate)
+
+    if (!visible) return null
+
+    const colorClass = isStage ? 'bg-indigo-600' : getStatusColor(task.status)
+
+    return (
+      <div
+        className={`absolute top-1/2 -translate-y-1/2 h-5 rounded cursor-pointer transition-opacity hover:opacity-80 ${colorClass}`}
+        style={{ left: `${left}px`, width: `${width}px` }}
+        onClick={(e) => {
+          e.stopPropagation()
+          openEditPanel(isStage ? 'stage' : 'task', task)
+        }}
+        title={`${isStage ? (task as unknown as Stage).stage_name : task.task_name}${startDate ? `\nStart: ${new Date(startDate).toLocaleDateString('fr-FR')}` : ''}${endDate ? `\nEnd: ${new Date(endDate).toLocaleDateString('fr-FR')}` : ''}`}
+      >
+        {width > 60 && (
+          <span className="text-xs text-white truncate px-1 leading-5 block">
+            {isStage ? (task as unknown as Stage).stage_name : task.task_name}
+          </span>
+        )}
+      </div>
+    )
+  }
+
+  // Render Gantt bar for a stage
+  const renderStageGanttBar = (stage: Stage) => {
+    const startDate = getStageStartDate(stage)
+    const endDate = getStageEndDate(stage)
+    const { left, width, visible } = calculateGanttBar(startDate, endDate)
+
+    if (!visible) return null
+
+    return (
+      <div
+        className="absolute top-1/2 -translate-y-1/2 h-6 rounded bg-indigo-600 cursor-pointer transition-opacity hover:opacity-80"
+        style={{ left: `${left}px`, width: `${width}px` }}
+        onClick={(e) => {
+          e.stopPropagation()
+          openEditPanel('stage', stage)
+        }}
+        title={`${stage.stage_name}${startDate ? `\nStart: ${new Date(startDate).toLocaleDateString('fr-FR')}` : ''}${endDate ? `\nEnd: ${new Date(endDate).toLocaleDateString('fr-FR')}` : ''}`}
+      >
+        {width > 60 && (
+          <span className="text-xs text-white font-medium truncate px-1 leading-6 block">
+            {stage.stage_name}
+          </span>
+        )}
+      </div>
+    )
+  }
+
   // Format days for display (remove unnecessary decimals)
   const formatDays = (days: number): string => {
     if (days === 0) return '0'
@@ -896,7 +1046,7 @@ export default function ProjectFollowUpPage() {
   // Render Functions
   // ============================================
 
-  const renderTaskRow = (task: Task, stageId: number | null, level: number = 0): React.ReactNode[] => {
+  const renderTaskRow = (task: Task, stageId: number | null, level: number = 0, previousTaskEndDate: string | null = null): React.ReactNode[] => {
     const hasSubtasks = task.subtasks && task.subtasks.length > 0
     const isExpanded = expandedTasks.has(task.id)
     const indent = level * 20
@@ -917,14 +1067,14 @@ export default function ProjectFollowUpPage() {
         onDrop={(e) => handleDrop(e, dragType, task.id, stageId)}
         onClick={() => openEditPanel('task', task)}
         className={`
-          hover:bg-gray-50 border-b border-gray-100 cursor-pointer
+          hover:bg-gray-50 border-b border-gray-100 cursor-pointer h-[36px]
           ${level > 0 ? 'bg-gray-50/30' : ''}
           ${isDragging ? 'opacity-50' : ''}
           ${isDragOver && dragOverItem?.position === 'before' ? 'border-t-2 border-t-indigo-500' : ''}
           ${isDragOver && dragOverItem?.position === 'after' ? 'border-b-2 border-b-indigo-500' : ''}
         `}
       >
-        <td className="py-2 px-4">
+        <td className="px-4">
           <div className="flex items-center" style={{ paddingLeft: `${indent}px` }}>
             <div className="w-5 mr-1 flex-shrink-0 text-gray-300 hover:text-gray-500 cursor-grab">
               <svg className="w-4 h-4" fill="currentColor" viewBox="0 0 24 24">
@@ -954,7 +1104,7 @@ export default function ProjectFollowUpPage() {
                 </svg>
               )}
             </div>
-            <span className={`text-sm ${level === 0 ? 'font-medium text-gray-900' : 'text-gray-700'}`}>
+            <span className={`text-sm truncate ${level === 0 ? 'font-medium text-gray-900' : 'text-gray-700'}`} title={task.task_name}>
               {task.task_name}
             </span>
             {hasSubtasks && (
@@ -972,7 +1122,7 @@ export default function ProjectFollowUpPage() {
             )}
           </div>
         </td>
-        <td className="py-2 px-4 text-center text-sm text-gray-600">
+        <td className="px-4 text-center text-sm text-gray-600">
           {hasSubtasks ? (
             <span className="text-gray-500 px-2 py-1" title="Earliest subtask start date">
               {formatDateForDisplay(getTaskStartDate(task))}
@@ -980,7 +1130,8 @@ export default function ProjectFollowUpPage() {
           ) : editingStartDateTaskId === task.id ? (
             <input
               type="date"
-              value={formatDateForInput(task.start_date)}
+              defaultValue={formatDateForInput(task.start_date) || formatDateForInput(previousTaskEndDate)}
+              max={formatDateForInput(task.due_date) || undefined}
               onChange={(e) => {
                 const newValue = e.target.value || null
                 handleSaveStartDate(task.id, newValue)
@@ -1000,7 +1151,7 @@ export default function ProjectFollowUpPage() {
             </span>
           )}
         </td>
-        <td className="py-2 px-4 text-center text-sm text-gray-600">
+        <td className="px-4 text-center text-sm text-gray-600">
           {hasSubtasks ? (
             <span className="text-gray-500 px-2 py-1" title="Latest subtask end date">
               {formatDateForDisplay(getTaskEndDate(task))}
@@ -1008,7 +1159,8 @@ export default function ProjectFollowUpPage() {
           ) : editingEndDateTaskId === task.id ? (
             <input
               type="date"
-              value={formatDateForInput(task.due_date)}
+              defaultValue={formatDateForInput(task.due_date) || formatDateForInput(task.start_date)}
+              min={formatDateForInput(task.start_date) || undefined}
               onChange={(e) => {
                 const newValue = e.target.value || null
                 handleSaveEndDate(task.id, newValue)
@@ -1028,7 +1180,7 @@ export default function ProjectFollowUpPage() {
             </span>
           )}
         </td>
-        <td className="py-2 px-4 text-sm text-gray-600 text-center">
+        <td className="px-4 text-sm text-gray-600 text-center">
           {hasSubtasks ? (
             <span className="text-gray-500 px-2 py-1" title="Sum of subtasks">
               {formatDays(calculateTaskTotalDays(task))}d
@@ -1059,8 +1211,8 @@ export default function ProjectFollowUpPage() {
             </span>
           )}
         </td>
-        <td className="py-2 px-4 text-center">{getStatusBadge(task.status)}</td>
-        <td className="py-2 px-4 text-sm text-gray-600">
+        <td className="px-4 text-center">{getStatusBadge(task.status)}</td>
+        <td className="px-4 text-sm text-gray-600">
           {hasSubtasks ? (
             <span className="text-gray-400 px-2 py-1" title="Assigned at subtask level">
               -
@@ -1094,21 +1246,32 @@ export default function ProjectFollowUpPage() {
             </span>
           )}
         </td>
+        {/* Gantt cell */}
+        <td className="p-0 relative" style={{ minWidth: `${weeksToShow * weekWidth}px` }}>
+          <div className="absolute inset-0 flex">
+            {ganttWeeks.map((_, i) => (
+              <div key={i} className="flex-shrink-0 border-r border-gray-100" style={{ width: `${weekWidth}px` }} />
+            ))}
+          </div>
+          {renderGanttBar(task)}
+        </td>
       </tr>
     )
 
     // Render subtasks
     if (hasSubtasks && isExpanded) {
+      let prevSubtaskEndDate: string | null = null
       task.subtasks.forEach(subtask => {
-        rows.push(...renderTaskRow(subtask, stageId, level + 1))
+        rows.push(...renderTaskRow(subtask, stageId, level + 1, prevSubtaskEndDate))
+        prevSubtaskEndDate = subtask.due_date
       })
     }
 
     // Render add subtask row if adding
     if (addingSubtaskInTask === task.id) {
       rows.push(
-        <tr key={`add-subtask-${task.id}`} className="bg-indigo-50/50">
-          <td colSpan={6} className="py-2 px-4">
+        <tr key={`add-subtask-${task.id}`} className="bg-indigo-50/50 h-[36px]">
+          <td colSpan={7} className="px-4">
             <div className="flex items-center" style={{ paddingLeft: `${(level + 1) * 20}px` }}>
               <input
                 type="text"
@@ -1158,13 +1321,13 @@ export default function ProjectFollowUpPage() {
         onDragOver={(e) => handleDragOver(e, 'stage', stage.id)}
         onDrop={(e) => handleDrop(e, 'stage', stage.id)}
         className={`
-          bg-indigo-50 hover:bg-indigo-100 cursor-grab border-b border-indigo-200
+          bg-indigo-50 hover:bg-indigo-100 cursor-grab border-b border-indigo-200 h-[44px]
           ${isDragging ? 'opacity-50' : ''}
           ${isDragOver && dragOverItem?.position === 'before' ? 'border-t-2 border-t-indigo-600' : ''}
           ${isDragOver && dragOverItem?.position === 'after' ? 'border-b-2 border-b-indigo-600' : ''}
         `}
       >
-        <td className="py-3 px-4">
+        <td className="px-4">
           <div className="flex items-center">
             <div className="w-5 mr-1 text-indigo-300 hover:text-indigo-500">
               <svg className="w-4 h-4" fill="currentColor" viewBox="0 0 24 24">
@@ -1187,18 +1350,18 @@ export default function ProjectFollowUpPage() {
             </span>
           </div>
         </td>
-        <td className="py-3 px-4 text-center text-sm text-indigo-600 font-medium">
+        <td className="px-4 text-center text-sm text-indigo-600 font-medium">
           {formatDateForDisplay(getStageStartDate(stage))}
         </td>
-        <td className="py-3 px-4 text-center text-sm text-indigo-600 font-medium">
+        <td className="px-4 text-center text-sm text-indigo-600 font-medium">
           {formatDateForDisplay(getStageEndDate(stage))}
         </td>
-        <td className="py-3 px-4 text-center">
+        <td className="px-4 text-center">
           <span className="text-sm font-medium text-indigo-600 bg-indigo-100 px-2 py-0.5 rounded">
             {formatDays(calculateStageTotalDays(stage))}d
           </span>
         </td>
-        <td className="py-3 px-4 text-center">
+        <td className="px-4 text-center">
           <div className="flex items-center justify-center gap-2">
             <span className="text-sm text-indigo-700">{stage.completed_task_count}/{stage.task_count}</span>
             <div className="w-16 bg-indigo-200 rounded-full h-2">
@@ -1207,7 +1370,16 @@ export default function ProjectFollowUpPage() {
             <span className="text-sm font-medium text-indigo-700">{completionRate}%</span>
           </div>
         </td>
-        <td className="py-3 px-4"></td>
+        <td className="px-4"></td>
+        {/* Gantt cell */}
+        <td className="p-0 relative bg-indigo-50/30" style={{ minWidth: `${weeksToShow * weekWidth}px` }}>
+          <div className="absolute inset-0 flex">
+            {ganttWeeks.map((_, i) => (
+              <div key={i} className="flex-shrink-0 border-r border-indigo-100" style={{ width: `${weekWidth}px` }} />
+            ))}
+          </div>
+          {renderStageGanttBar(stage)}
+        </td>
       </tr>
     )
 
@@ -1217,7 +1389,7 @@ export default function ProjectFollowUpPage() {
         rows.push(
           <tr
             key={`stage-${stage.id}-empty`}
-            className={`border-b border-gray-100 transition-colors ${isDropTarget ? 'bg-indigo-50' : ''}`}
+            className={`border-b border-gray-100 transition-colors h-[36px] ${isDropTarget ? 'bg-indigo-50' : ''}`}
             onDragOver={(e) => {
               if (dragItem?.type === 'task') {
                 e.preventDefault()
@@ -1239,7 +1411,7 @@ export default function ProjectFollowUpPage() {
               }
             }}
           >
-            <td colSpan={6} className={`py-4 text-center text-sm ${isDropTarget ? 'text-indigo-600 font-medium' : 'text-gray-500'}`}>
+            <td colSpan={7} className={`px-4 text-left text-sm ${isDropTarget ? 'text-indigo-600 font-medium' : 'text-gray-500'}`}>
               {isDropTarget ? (
                 'Drop task here'
               ) : (
@@ -1257,16 +1429,18 @@ export default function ProjectFollowUpPage() {
           </tr>
         )
       } else {
+        let prevTaskEndDate: string | null = null
         stage.tasks.forEach(task => {
-          rows.push(...renderTaskRow(task, stage.id))
+          rows.push(...renderTaskRow(task, stage.id, 0, prevTaskEndDate))
+          prevTaskEndDate = task.due_date
         })
       }
 
       // Add task row
       if (addingTaskInStage === stage.id) {
         rows.push(
-          <tr key={`add-task-${stage.id}`} className="bg-green-50/50 border-b border-gray-100">
-            <td colSpan={6} className="py-2 px-4">
+          <tr key={`add-task-${stage.id}`} className="bg-green-50/50 border-b border-gray-100 h-[36px]">
+            <td colSpan={7} className="px-4">
               <div className="flex items-center">
                 <input
                   type="text"
@@ -1297,8 +1471,8 @@ export default function ProjectFollowUpPage() {
       } else if (stage.tasks.length > 0) {
         // Add task button row
         rows.push(
-          <tr key={`add-task-btn-${stage.id}`} className="border-b border-gray-200">
-            <td colSpan={6} className="py-1.5 px-4">
+          <tr key={`add-task-btn-${stage.id}`} className="border-b border-gray-200 h-[36px]">
+            <td colSpan={7} className="px-4">
               <button
                 onClick={() => { setAddingTaskInStage(stage.id); setNewTaskName(''); }}
                 className="flex items-center text-sm text-gray-500 hover:text-indigo-600"
@@ -1371,6 +1545,14 @@ export default function ProjectFollowUpPage() {
                 </div>
               </div>
             </div>
+            <div className="flex items-center gap-4">
+              <div className="text-right">
+                <div className="text-sm text-gray-500">Total estimé</div>
+                <div className="text-2xl font-bold text-indigo-600">
+                  {formatDays(calculateProjectTotalDays())}j
+                </div>
+              </div>
+            </div>
           </div>
         </div>
       </header>
@@ -1383,19 +1565,83 @@ export default function ProjectFollowUpPage() {
           </div>
         )}
 
-        {/* Split Layout: Table + Gantt */}
-        <div className="flex gap-4">
-          {/* Left Panel: Table */}
-          <div className="flex-shrink-0 bg-white shadow rounded-lg overflow-hidden" style={{ width: '750px' }}>
-            <table className="w-full">
-            <thead className="bg-gray-100 border-b border-gray-200">
+        {/* Table with integrated Gantt */}
+        <div className="bg-white shadow rounded-lg overflow-x-auto">
+          <table className="w-full">
+            <thead className="bg-gray-50 border-b border-gray-200">
+              {/* Navigation row for Gantt */}
+              <tr className="border-b border-gray-200">
+                <th colSpan={6} className="bg-gray-100 px-4 py-2 text-left">
+                  <span className="text-sm font-medium text-gray-600">Project Tasks</span>
+                </th>
+                <th className="bg-gray-100 px-2 py-1">
+                  <div className="flex items-center justify-center gap-1">
+                    <button
+                      onClick={() => setGanttWeekOffset(prev => prev - 20)}
+                      className="px-1.5 py-0.5 text-xs bg-white border border-gray-300 rounded hover:bg-gray-50"
+                      title="Previous 20 weeks"
+                    >
+                      ◀◀
+                    </button>
+                    <button
+                      onClick={() => setGanttWeekOffset(prev => prev - 4)}
+                      className="px-1.5 py-0.5 text-xs bg-white border border-gray-300 rounded hover:bg-gray-50"
+                      title="Previous 4 weeks"
+                    >
+                      ◀
+                    </button>
+                    <button
+                      onClick={() => setGanttWeekOffset(0)}
+                      className={`px-2 py-0.5 text-xs border rounded ${isCurrentWeekVisible ? 'bg-indigo-100 border-indigo-300 text-indigo-700' : 'bg-white border-gray-300 hover:bg-gray-50'}`}
+                      title="Go to current week"
+                    >
+                      Today
+                    </button>
+                    <button
+                      onClick={() => setGanttWeekOffset(prev => prev + 4)}
+                      className="px-1.5 py-0.5 text-xs bg-white border border-gray-300 rounded hover:bg-gray-50"
+                      title="Next 4 weeks"
+                    >
+                      ▶
+                    </button>
+                    <button
+                      onClick={() => setGanttWeekOffset(prev => prev + 20)}
+                      className="px-1.5 py-0.5 text-xs bg-white border border-gray-300 rounded hover:bg-gray-50"
+                      title="Next 20 weeks"
+                    >
+                      ▶▶
+                    </button>
+                  </div>
+                </th>
+              </tr>
+              {/* Column headers */}
               <tr>
-                <th className="py-3 px-4 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Workload</th>
-                <th className="py-3 px-4 text-center text-xs font-medium text-gray-500 uppercase tracking-wider w-24">Start</th>
-                <th className="py-3 px-4 text-center text-xs font-medium text-gray-500 uppercase tracking-wider w-24">End</th>
-                <th className="py-3 px-4 text-center text-xs font-medium text-gray-500 uppercase tracking-wider w-20">Estimated</th>
-                <th className="py-3 px-4 text-center text-xs font-medium text-gray-500 uppercase tracking-wider w-28">Status</th>
-                <th className="py-3 px-4 text-left text-xs font-medium text-gray-500 uppercase tracking-wider w-44">Assigned</th>
+                <th className="px-4 py-2 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Workload</th>
+                <th className="px-4 py-2 text-center text-xs font-medium text-gray-500 uppercase tracking-wider w-24">Start</th>
+                <th className="px-4 py-2 text-center text-xs font-medium text-gray-500 uppercase tracking-wider w-24">End</th>
+                <th className="px-4 py-2 text-center text-xs font-medium text-gray-500 uppercase tracking-wider w-20">Estimated</th>
+                <th className="px-4 py-2 text-center text-xs font-medium text-gray-500 uppercase tracking-wider w-28">Status</th>
+                <th className="px-4 py-2 text-left text-xs font-medium text-gray-500 uppercase tracking-wider w-36">Assigned</th>
+                {/* Gantt week headers */}
+                <th className="p-0" style={{ minWidth: `${weeksToShow * weekWidth}px` }}>
+                  <div className="flex">
+                    {ganttWeeks.map((week, i) => {
+                      const isCurrentWeek = getWeekStart(new Date()).getTime() === week.getTime()
+                      return (
+                        <div
+                          key={i}
+                          className={`flex-shrink-0 px-1 py-1 text-center text-xs border-r border-gray-200 ${isCurrentWeek ? 'bg-indigo-100 font-medium text-indigo-700' : 'text-gray-600'}`}
+                          style={{ width: `${weekWidth}px` }}
+                        >
+                          <div>S{getWeekNumber(week)}</div>
+                          <div className="text-[9px] text-gray-400">
+                            {week.getDate().toString().padStart(2, '0')}/{(week.getMonth() + 1).toString().padStart(2, '0')}
+                          </div>
+                        </div>
+                      )
+                    })}
+                  </div>
+                </th>
               </tr>
             </thead>
             <tbody className="[&_tr]:group">
@@ -1404,7 +1650,7 @@ export default function ProjectFollowUpPage() {
               {/* Add Stage Row */}
               {addingStage ? (
                 <tr className="bg-indigo-50/50 border-b border-indigo-200">
-                  <td colSpan={6} className="py-3 px-4">
+                  <td colSpan={7} className="py-3 px-4">
                     <div className="flex items-center">
                       <input
                         type="text"
@@ -1433,7 +1679,7 @@ export default function ProjectFollowUpPage() {
                 </tr>
               ) : (
                 <tr className="border-b border-gray-200 hover:bg-gray-50">
-                  <td colSpan={6} className="py-3 px-4">
+                  <td colSpan={7} className="py-3 px-4">
                     <button
                       onClick={() => setAddingStage(true)}
                       className="flex items-center text-sm text-gray-500 hover:text-indigo-600"
@@ -1451,7 +1697,7 @@ export default function ProjectFollowUpPage() {
               {unstagedTasks.length > 0 && (
                 <>
                   <tr className="bg-gray-100 border-b border-gray-200 border-t-2">
-                    <td colSpan={6} className="py-3 px-4">
+                    <td colSpan={7} className="py-3 px-4">
                       <div className="flex items-center">
                         <svg className="w-5 h-5 text-gray-500 mr-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                           <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M5 8h14M5 8a2 2 0 110-4h14a2 2 0 110 4M5 8v10a2 2 0 002 2h10a2 2 0 002-2V8m-9 4h4" />
@@ -1461,23 +1707,11 @@ export default function ProjectFollowUpPage() {
                       </div>
                     </td>
                   </tr>
-                  {unstagedTasks.map(task => renderTaskRow(task, null))}
+                  {unstagedTasks.map((task, index) => renderTaskRow(task, null, 0, index > 0 ? unstagedTasks[index - 1].due_date : null))}
                 </>
               )}
             </tbody>
           </table>
-          </div>
-
-          {/* Right Panel: Gantt Chart */}
-          <div className="flex-1 bg-white shadow rounded-lg overflow-hidden min-w-0">
-            <GanttChart
-              stages={stages}
-              unstagedTasks={unstagedTasks}
-              weekStartsOn="monday"
-              onTaskClick={(task) => openEditPanel('task', task)}
-              onStageClick={(stage) => openEditPanel('stage', stage)}
-            />
-          </div>
         </div>
       </main>
 
