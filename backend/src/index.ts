@@ -972,6 +972,43 @@ app.get('/api/projects/:projectId', async (req, res) => {
   }
 })
 
+// Get project timesheet data aggregated by task and week
+app.get('/api/projects/:projectId/timesheet-summary', async (req, res) => {
+  const { projectId } = req.params
+
+  try {
+    // Get all timesheet entries for this project, grouped by task and week (Monday start)
+    // Use date_trunc with 'week' which starts on Monday in ISO weeks
+    const result = await pool.query(
+      `SELECT
+        te.task_id,
+        TO_CHAR(DATE_TRUNC('week', te.date), 'YYYY-MM-DD') as week_start,
+        SUM(te.hours) as total_hours
+       FROM timesheet_entries te
+       JOIN tasks t ON te.task_id = t.id
+       WHERE t.project_id = $1
+       GROUP BY te.task_id, DATE_TRUNC('week', te.date)
+       ORDER BY te.task_id, week_start`,
+      [projectId]
+    )
+
+    // Transform to a map: { taskId: { weekStart: hours } }
+    const timesheetByTask: Record<number, Record<string, number>> = {}
+    for (const row of result.rows) {
+      if (!timesheetByTask[row.task_id]) {
+        timesheetByTask[row.task_id] = {}
+      }
+      // week_start is already formatted as YYYY-MM-DD string
+      timesheetByTask[row.task_id][row.week_start] = parseFloat(row.total_hours)
+    }
+
+    res.json({ timesheetByTask })
+  } catch (error) {
+    console.error('Get project timesheet summary error:', error)
+    res.status(500).json({ error: 'Failed to fetch project timesheet summary' })
+  }
+})
+
 // ============================================
 // STAGES CRUD
 // ============================================

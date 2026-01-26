@@ -126,6 +126,9 @@ export default function ProjectFollowUpPage() {
   const [error, setError] = useState('')
   const [users, setUsers] = useState<User[]>([])
 
+  // Timesheet data by task and week: { taskId: { weekStart: hours } }
+  const [timesheetByTask, setTimesheetByTask] = useState<Record<number, Record<string, number>>>({})
+
   // Track expanded state for stages, tasks and subtasks
   const [expandedStages, setExpandedStages] = useState<Set<number>>(new Set())
   const [expandedTasks, setExpandedTasks] = useState<Set<number>>(new Set())
@@ -215,11 +218,15 @@ export default function ProjectFollowUpPage() {
   const fetchProjectDetails = async () => {
     try {
       const { projectsAPI } = await import('@/lib/api')
-      const data = await projectsAPI.getById(parseInt(projectId))
+      const [data, timesheetData] = await Promise.all([
+        projectsAPI.getById(parseInt(projectId)),
+        projectsAPI.getTimesheetSummary(parseInt(projectId))
+      ])
       setProject(data.project)
       setStages(data.stages)
       setUnstagedTasks(data.unstagedTasks)
       setExpandedStages(new Set(data.stages.map((s: Stage) => s.id)))
+      setTimesheetByTask(timesheetData.timesheetByTask || {})
     } catch (err: any) {
       console.error('Error fetching project:', err)
       setError(err.response?.data?.error || 'Failed to load project')
@@ -1066,6 +1073,29 @@ export default function ProjectFollowUpPage() {
     return { left, width, visible: true }
   }
 
+  // Get consumed hours for a task in a specific week
+  const getTaskWeekHours = (taskId: number, weekStart: Date): number => {
+    const taskData = timesheetByTask[taskId]
+    if (!taskData) return 0
+    // Format the week start as YYYY-MM-DD to match backend format (local date)
+    const year = weekStart.getFullYear()
+    const month = String(weekStart.getMonth() + 1).padStart(2, '0')
+    const day = String(weekStart.getDate()).padStart(2, '0')
+    const weekKey = `${year}-${month}-${day}`
+    return taskData[weekKey] || 0
+  }
+
+  // Get total consumed hours for a task (including subtasks) in a specific week
+  const getTaskWeekHoursWithSubtasks = (task: Task, weekStart: Date): number => {
+    let total = getTaskWeekHours(task.id, weekStart)
+    if (task.subtasks) {
+      for (const subtask of task.subtasks) {
+        total += getTaskWeekHoursWithSubtasks(subtask, weekStart)
+      }
+    }
+    return total
+  }
+
   // Render Gantt bar for a task
   const renderGanttBar = (task: Task, isStage: boolean = false) => {
     const startDate = isStage ? getStageStartDate(task as unknown as Stage) : getTaskStartDate(task)
@@ -1376,9 +1406,23 @@ export default function ProjectFollowUpPage() {
         {/* Gantt cell */}
         <td className="p-0 relative" style={{ minWidth: `${weeksToShow * weekWidth}px` }}>
           <div className="absolute inset-0 flex">
-            {ganttWeeks.map((_, i) => (
-              <div key={i} className="flex-shrink-0 border-r border-gray-100" style={{ width: `${weekWidth}px` }} />
-            ))}
+            {ganttWeeks.map((week, i) => {
+              const hours = getTaskWeekHoursWithSubtasks(task, week)
+              const days = hours / 8 // Convert hours to days (assuming 8h/day)
+              return (
+                <div
+                  key={i}
+                  className="flex-shrink-0 border-r border-gray-100 flex items-end justify-center pb-0.5"
+                  style={{ width: `${weekWidth}px` }}
+                >
+                  {hours > 0 && (
+                    <span className="text-[10px] text-gray-500 font-medium" title={`${hours}h consumed`}>
+                      {days % 1 === 0 ? days : days.toFixed(1)}d
+                    </span>
+                  )}
+                </div>
+              )
+            })}
           </div>
           {renderGanttBar(task)}
         </td>

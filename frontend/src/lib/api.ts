@@ -91,6 +91,11 @@ export const projectsAPI = {
     })
     return response.data
   },
+
+  getTimesheetSummary: async (projectId: number) => {
+    const response = await api.get(`/api/projects/${projectId}/timesheet-summary`)
+    return response.data
+  },
 }
 
 // Stages API functions
