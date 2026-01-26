@@ -34,6 +34,7 @@ export default function UsersPage() {
   const [users, setUsers] = useState<User[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
+  const [showInactiveUsers, setShowInactiveUsers] = useState(false)
 
   // Modal states
   const [showModal, setShowModal] = useState(false)
@@ -276,6 +277,19 @@ export default function UsersPage() {
         )}
 
         <div className="bg-white shadow rounded-lg overflow-hidden">
+          {/* Filter toolbar */}
+          <div className="px-6 py-3 border-b border-gray-200 bg-gray-50">
+            <label className="flex items-center gap-2 text-sm text-gray-700 cursor-pointer">
+              <input
+                type="checkbox"
+                checked={showInactiveUsers}
+                onChange={(e) => setShowInactiveUsers(e.target.checked)}
+                className="rounded border-gray-300 text-indigo-600 focus:ring-indigo-500"
+              />
+              Show inactive users
+            </label>
+          </div>
+
           {loading ? (
             <div className="flex justify-center py-12">
               <svg className="animate-spin h-8 w-8 text-indigo-600" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
@@ -288,8 +302,16 @@ export default function UsersPage() {
               <svg className="mx-auto h-12 w-12 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M12 4.354a4 4 0 110 5.292M15 21H3v-1a6 6 0 0112 0v1zm0 0h6v-1a6 6 0 00-9-5.197M13 7a4 4 0 11-8 0 4 4 0 018 0z" />
               </svg>
-              <h3 className="mt-2 text-sm font-medium text-gray-900">Aucun utilisateur</h3>
-              <p className="mt-1 text-sm text-gray-500">Commencez par créer un nouvel utilisateur.</p>
+              <h3 className="mt-2 text-sm font-medium text-gray-900">No users</h3>
+              <p className="mt-1 text-sm text-gray-500">Start by creating a new user.</p>
+            </div>
+          ) : users.filter(user => showInactiveUsers || user.is_active).length === 0 ? (
+            <div className="text-center py-12">
+              <svg className="mx-auto h-12 w-12 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M12 4.354a4 4 0 110 5.292M15 21H3v-1a6 6 0 0112 0v1zm0 0h6v-1a6 6 0 00-9-5.197M13 7a4 4 0 11-8 0 4 4 0 018 0z" />
+              </svg>
+              <h3 className="mt-2 text-sm font-medium text-gray-900">No active users</h3>
+              <p className="mt-1 text-sm text-gray-500">Check the box above to show inactive users.</p>
             </div>
           ) : (
             <table className="min-w-full divide-y divide-gray-200">
@@ -319,7 +341,7 @@ export default function UsersPage() {
                 </tr>
               </thead>
               <tbody className="bg-white divide-y divide-gray-200">
-                {users.map((user) => (
+                {users.filter(user => showInactiveUsers || user.is_active).map((user) => (
                   <tr key={user.id} className={!user.is_active ? 'bg-gray-50' : ''}>
                     <td className="px-6 py-4 whitespace-nowrap">
                       <div className="flex items-center">

@@ -1,6 +1,6 @@
 'use client'
 
-import { useEffect, useState, useMemo, useCallback } from 'react'
+import { useEffect, useState, useMemo, useCallback, useRef } from 'react'
 import { useRouter } from 'next/navigation'
 
 interface User {
@@ -88,6 +88,32 @@ export default function TimesheetPage() {
 
   // Expanded projects
   const [expandedProjects, setExpandedProjects] = useState<Set<number>>(new Set())
+
+  // Ref for scroll container
+  const tableContainerRef = useRef<HTMLDivElement>(null)
+
+  // List of visible task IDs for vertical navigation
+  const visibleTaskIds = useMemo(() => {
+    const ids: number[] = []
+    projects.forEach(project => {
+      if (expandedProjects.has(project.id)) {
+        project.tasks.forEach(task => {
+          ids.push(task.id)
+        })
+      }
+    })
+    return ids
+  }, [projects, expandedProjects])
+
+  // Get project ID for a task
+  const getProjectIdForTask = useCallback((taskId: number): number | null => {
+    for (const project of projects) {
+      if (project.tasks.some(t => t.id === taskId)) {
+        return project.id
+      }
+    }
+    return null
+  }, [projects])
 
   // Get days for current view
   const viewDays = useMemo(() => {
@@ -323,7 +349,103 @@ export default function TimesheetPage() {
     }
   }
 
-  // Save entry
+  // Save entry with optimistic update (no full reload to preserve scroll position)
+  const saveEntryOptimistic = async (taskId: number, date: Date, hours: number): Promise<boolean> => {
+    if (!user || !selectedUserId) return false
+
+    const dateStr = formatDateForAPI(date)
+
+    // Optimistic update of local state
+    setEntries(prevEntries => {
+      const existingIndex = prevEntries.findIndex(
+        e => e.task_id === taskId && normalizeEntryDate(e.date) === dateStr
+      )
+
+      if (hours === 0) {
+        // Remove entry if hours = 0
+        if (existingIndex >= 0) {
+          return prevEntries.filter((_, i) => i !== existingIndex)
+        }
+        return prevEntries
+      }
+
+      if (existingIndex >= 0) {
+        // Update existing entry
+        const updated = [...prevEntries]
+        updated[existingIndex] = {
+          ...updated[existingIndex],
+          hours
+        }
+        return updated
+      } else {
+        // Create new entry (with temporary negative id)
+        return [
+          ...prevEntries,
+          {
+            id: -Date.now(),
+            task_id: taskId,
+            date: dateStr,
+            hours,
+            description: null,
+            entered_by: user.id,
+            entered_by_username: user.username
+          }
+        ]
+      }
+    })
+
+    // Also update task total_hours for Gap calculation
+    setProjects(prevProjects => {
+      return prevProjects.map(project => ({
+        ...project,
+        tasks: project.tasks.map(task => {
+          if (task.id === taskId) {
+            // Calculate new total based on entries
+            const otherEntriesTotal = entries
+              .filter(e => e.task_id === taskId && normalizeEntryDate(e.date) !== dateStr)
+              .reduce((sum, e) => sum + parseFloat(e.hours.toString()), 0)
+            return {
+              ...task,
+              total_hours: otherEntriesTotal + hours
+            }
+          }
+          return task
+        })
+      }))
+    })
+
+    try {
+      const { timesheetAPI } = await import('@/lib/api')
+      const result = await timesheetAPI.saveEntry({
+        user_id: selectedUserId,
+        task_id: taskId,
+        date: dateStr,
+        hours,
+        entered_by: user.id
+      })
+
+      // Update entry with real ID if it was a new entry
+      if (result.entry) {
+        setEntries(prevEntries =>
+          prevEntries.map(e =>
+            e.task_id === taskId && normalizeEntryDate(e.date) === dateStr
+              ? { ...e, id: result.entry.id }
+              : e
+          )
+        )
+      }
+
+      return true
+    } catch (err: any) {
+      console.error('Error saving entry:', err)
+      // On error, reload to get the real state
+      await loadTimesheetData()
+      alert(err.response?.data?.error || 'Failed to save entry')
+      return false
+    }
+  }
+
+  // Save entry (legacy - with full reload)
   const saveEntry = async (taskId: number, date: Date, hours: number) => {
     if (!user || !selectedUserId) return
 
@@ -411,12 +533,13 @@ export default function TimesheetPage() {
     const [year, month, day] = editingCell.date.split('-').map(Number)
     const date = new Date(year, month - 1, day)
 
-    await saveEntry(editingCell.taskId, date, hours)
+    // Use optimistic update to preserve scroll position
+    await saveEntryOptimistic(editingCell.taskId, date, hours)
     setEditingCell(null)
     setEditValue('')
   }
 
-  const handleCellKeyDown = (e: React.KeyboardEvent) => {
+  const handleCellKeyDown = async (e: React.KeyboardEvent) => {
     if (e.key === 'Enter') {
       handleCellBlur()
     } else if (e.key === 'Escape') {
@@ -425,8 +548,57 @@ export default function TimesheetPage() {
     } else if (e.key === 'Tab') {
       // Move to next cell
       handleCellBlur()
+    } else if (e.key === 'ArrowDown' && editingCell) {
+      e.preventDefault()
+
+      // Find the next task in the visible list
+      const currentIndex = visibleTaskIds.indexOf(editingCell.taskId)
+      if (currentIndex >= 0 && currentIndex < visibleTaskIds.length - 1) {
+        const nextTaskId = visibleTaskIds[currentIndex + 1]
+        const nextProjectId = getProjectIdForTask(nextTaskId)
+
+        // Save current cell first (optimistic)
+        const hours = parseHoursInput(editValue)
+        const [year, month, day] = editingCell.date.split('-').map(Number)
+        const date = new Date(year, month - 1, day)
+        await saveEntryOptimistic(editingCell.taskId, date, hours)
+
+        // Check if next cell is locked
+        if (nextProjectId && !isDateLocked(date, nextProjectId)) {
+          // Activate editing on the next cell (same date column)
+          const nextEntry = getEntry(nextTaskId, date)
+          setEditingCell({ taskId: nextTaskId, date: editingCell.date })
+          setEditValue(nextEntry ? formatHours(parseFloat(nextEntry.hours.toString())) : '')
+        } else {
+          // Next cell is locked, just finish editing
+          setEditingCell(null)
+          setEditValue('')
+        }
+      } else {
+        // No next task, just save and finish
+        handleCellBlur()
+      }
     }
   }
+
+  // Handle keyboard navigation for horizontal scroll
+  const handleTableKeyDown = useCallback((e: React.KeyboardEvent) => {
+    // Don't intercept if we're editing a cell
+    if (editingCell || editingRemaining) return
+
+    const container = tableContainerRef.current
+    if (!container) return
+
+    const SCROLL_AMOUNT = 100 // pixels per key press
+
+    if (e.key === 'ArrowLeft') {
+      e.preventDefault()
+      container.scrollBy({ left: -SCROLL_AMOUNT, behavior: 'smooth' })
+    } else if (e.key === 'ArrowRight') {
+      e.preventDefault()
+      container.scrollBy({ left: SCROLL_AMOUNT, behavior: 'smooth' })
+    }
+  }, [editingCell, editingRemaining])
 
   // Navigation
   const navigate = (direction: number) => {
@@ -589,24 +761,29 @@ export default function TimesheetPage() {
       )}
 
       {/* Timesheet grid */}
-      <div className="overflow-x-auto">
+      <div
+        ref={tableContainerRef}
+        className="overflow-x-auto outline-none"
+        tabIndex={0}
+        onKeyDown={handleTableKeyDown}
+      >
         <table className="w-full border-collapse">
           <thead>
             <tr className="bg-gray-50">
-              <th className="sticky left-0 z-20 bg-gray-50 border-b border-r border-gray-200 px-4 py-2 text-left text-sm font-medium text-gray-700 min-w-[250px]">
+              <th className="sticky left-0 z-20 bg-gray-50 border-b border-r border-gray-200 px-4 py-2 text-left text-sm font-medium text-gray-700 w-[250px] min-w-[250px]">
                 Project / Task
               </th>
-              <th className="bg-gray-50 border-b border-r border-gray-200 px-2 py-2 text-center text-sm font-medium text-gray-700 min-w-[60px]">
+              <th className="sticky left-[250px] z-20 bg-gray-50 border-b border-r border-gray-200 px-2 py-2 text-center text-sm font-medium text-gray-700 w-[60px] min-w-[60px]">
                 Est.
               </th>
-              <th className="bg-gray-50 border-b border-r border-gray-200 px-2 py-2 text-center text-sm font-medium text-gray-700 min-w-[60px]">
+              <th className="sticky left-[310px] z-20 bg-gray-50 border-b border-r border-gray-200 px-2 py-2 text-center text-sm font-medium text-gray-700 w-[60px] min-w-[60px]">
                 Spent
               </th>
-              <th className="bg-gray-50 border-b border-r border-gray-200 px-2 py-2 text-center text-sm font-medium text-gray-700 min-w-[60px]">
+              <th className="sticky left-[370px] z-20 bg-gray-50 border-b border-r border-gray-200 px-2 py-2 text-center text-sm font-medium text-gray-700 w-[60px] min-w-[60px]">
                 Gap
               </th>
               <th
-                className="bg-gray-50 border-b border-r-2 border-r-gray-400 px-2 py-2 text-center text-sm font-medium text-gray-700 min-w-[80px] cursor-pointer hover:bg-gray-100 select-none"
+                className="sticky left-[430px] z-20 bg-gray-50 border-b border-r-2 border-r-gray-400 px-2 py-2 text-center text-sm font-medium text-gray-700 w-[80px] min-w-[80px] cursor-pointer hover:bg-gray-100 select-none"
                 onClick={toggleRemainingDisplayUnit}
                 title="Click to toggle between hours and days"
               >
@@ -656,7 +833,7 @@ export default function TimesheetPage() {
                     {/* Project row */}
                     <tr className="bg-indigo-50/50 hover:bg-indigo-50">
                       <td
-                        className="sticky left-0 z-10 bg-indigo-50/50 hover:bg-indigo-50 border-b border-r border-gray-200 px-4 py-2 cursor-pointer"
+                        className="sticky left-0 z-10 bg-indigo-50/50 hover:bg-indigo-50 border-b border-r border-gray-200 px-4 py-2 cursor-pointer w-[250px] min-w-[250px]"
                         onClick={() => toggleProject(project.id)}
                       >
                         <div className="flex items-center gap-2">
@@ -673,18 +850,18 @@ export default function TimesheetPage() {
                         </div>
                       </td>
                       {/* Empty estimated cell for project row */}
-                      <td className="bg-indigo-50/50 border-b border-r border-gray-200 px-2 py-2"></td>
+                      <td className="sticky left-[250px] z-10 bg-indigo-50/50 border-b border-r border-gray-200 px-2 py-2 w-[60px] min-w-[60px]"></td>
                       {/* Empty spent cell for project row */}
-                      <td className="bg-indigo-50/50 border-b border-r border-gray-200 px-2 py-2"></td>
+                      <td className="sticky left-[310px] z-10 bg-indigo-50/50 border-b border-r border-gray-200 px-2 py-2 w-[60px] min-w-[60px]"></td>
                       {/* Empty gap cell for project row */}
-                      <td className="bg-indigo-50/50 border-b border-r border-gray-200 px-2 py-2"></td>
+                      <td className="sticky left-[370px] z-10 bg-indigo-50/50 border-b border-r border-gray-200 px-2 py-2 w-[60px] min-w-[60px]"></td>
                       {/* Empty remaining cell for project row */}
-                      <td className="bg-indigo-50/50 border-b border-r-2 border-r-gray-400 px-2 py-2"></td>
+                      <td className="sticky left-[430px] z-10 bg-indigo-50/50 border-b border-r-2 border-r-gray-400 px-2 py-2 w-[80px] min-w-[80px]"></td>
                       {viewDays.map((day, i) => (
                         <td
                           key={i}
-                          className={`border-b border-r border-gray-200 px-1 py-2 text-center text-xs ${
-                            isToday(day) ? 'bg-indigo-50' : isWeekend(day) ? 'bg-gray-50' : ''
+                          className={`border-b border-r border-gray-200 px-1 py-2 text-center text-xs min-w-[50px] ${
+                            isToday(day) ? 'bg-indigo-50' : isWeekend(day) ? 'bg-gray-50' : 'bg-indigo-50/30'
                           }`}
                         >
                           {/* Project row cells are empty */}
@@ -702,7 +879,7 @@ export default function TimesheetPage() {
                       const stale = isRemainingStale(task)
                       return (
                       <tr key={task.id} className="hover:bg-gray-50">
-                        <td className="sticky left-0 z-10 bg-white hover:bg-gray-50 border-b border-r border-gray-200 px-4 py-1.5">
+                        <td className="sticky left-0 z-10 bg-white hover:bg-gray-50 border-b border-r border-gray-200 px-4 py-1.5 w-[250px] min-w-[250px]">
                           <div className="flex items-center gap-2 pl-6">
                             <svg className="w-4 h-4 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2" />
@@ -714,19 +891,19 @@ export default function TimesheetPage() {
                           </div>
                         </td>
                         {/* Estimated column */}
-                        <td className="border-b border-r border-gray-200 px-1 py-0.5 text-center">
+                        <td className="sticky left-[250px] z-10 bg-white border-b border-r border-gray-200 px-1 py-0.5 text-center w-[60px] min-w-[60px]">
                           <span className="text-xs text-gray-600">
                             {task.sold_days > 0 ? `${task.sold_days}d` : '-'}
                           </span>
                         </td>
                         {/* Spent column - total hours converted to days */}
-                        <td className="border-b border-r border-gray-200 px-1 py-0.5 text-center">
+                        <td className="sticky left-[310px] z-10 bg-white border-b border-r border-gray-200 px-1 py-0.5 text-center w-[60px] min-w-[60px]">
                           <span className="text-xs text-gray-600">
                             {task.total_hours > 0 ? `${Math.round((task.total_hours / getSelectedUserDailyHours()) * 100) / 100}d` : '-'}
                           </span>
                         </td>
                         {/* Gap column - (1 - ((Spent + Rem) / Est)) as percentage */}
-                        <td className="border-b border-r border-gray-200 px-1 py-0.5 text-center">
+                        <td className="sticky left-[370px] z-10 bg-white border-b border-r border-gray-200 px-1 py-0.5 text-center w-[60px] min-w-[60px]">
                           {(() => {
                             const estDays = task.sold_days
                             const spentDays = task.total_hours / getSelectedUserDailyHours()
@@ -753,8 +930,8 @@ export default function TimesheetPage() {
                         </td>
                         {/* Remaining column */}
                         <td
-                          className={`border-b border-r-2 border-r-gray-400 px-1 py-0.5 text-center cursor-pointer hover:bg-blue-50 ${
-                            stale ? 'bg-red-100' : ''
+                          className={`sticky left-[430px] z-10 border-b border-r-2 border-r-gray-400 px-1 py-0.5 text-center cursor-pointer hover:bg-blue-50 w-[80px] min-w-[80px] ${
+                            stale ? 'bg-red-100' : 'bg-white'
                           }`}
                           onClick={() => handleRemainingClick(task)}
                         >
@@ -783,7 +960,7 @@ export default function TimesheetPage() {
                           return (
                             <td
                               key={i}
-                              className={`border-b border-r border-gray-200 px-0.5 py-0.5 text-center ${
+                              className={`border-b border-r border-gray-200 px-0.5 py-0.5 text-center min-w-[50px] ${
                                 isToday(day) ? 'bg-indigo-50/50' : isWeekend(day) ? 'bg-gray-50' : ''
                               } ${isLocked ? 'cursor-not-allowed' : 'cursor-pointer hover:bg-blue-50'}`}
                               onClick={() => !isEditing && handleCellClick(task.id, day, project.id)}
@@ -819,21 +996,21 @@ export default function TimesheetPage() {
 
                 {/* Day totals row */}
                 <tr className="bg-gray-100 font-medium">
-                  <td className="sticky left-0 z-10 bg-gray-100 border-t-2 border-r border-gray-300 px-4 py-2 text-sm text-gray-700">
+                  <td className="sticky left-0 z-10 bg-gray-100 border-t-2 border-r border-gray-300 px-4 py-2 text-sm text-gray-700 w-[250px] min-w-[250px]">
                     Daily total
                   </td>
                   {/* Empty estimated cell for totals row */}
-                  <td className="bg-gray-100 border-t-2 border-r border-gray-300 px-2 py-2"></td>
+                  <td className="sticky left-[250px] z-10 bg-gray-100 border-t-2 border-r border-gray-300 px-2 py-2 w-[60px] min-w-[60px]"></td>
                   {/* Empty spent cell for totals row */}
-                  <td className="bg-gray-100 border-t-2 border-r border-gray-300 px-2 py-2"></td>
+                  <td className="sticky left-[310px] z-10 bg-gray-100 border-t-2 border-r border-gray-300 px-2 py-2 w-[60px] min-w-[60px]"></td>
                   {/* Empty gap cell for totals row */}
-                  <td className="bg-gray-100 border-t-2 border-r border-gray-300 px-2 py-2"></td>
+                  <td className="sticky left-[370px] z-10 bg-gray-100 border-t-2 border-r border-gray-300 px-2 py-2 w-[60px] min-w-[60px]"></td>
                   {/* Empty remaining cell for totals row */}
-                  <td className="bg-gray-100 border-t-2 border-r-2 border-r-gray-400 px-2 py-2"></td>
+                  <td className="sticky left-[430px] z-10 bg-gray-100 border-t-2 border-r-2 border-r-gray-400 px-2 py-2 w-[80px] min-w-[80px]"></td>
                   {viewDays.map((day, i) => (
                     <td
                       key={i}
-                      className={`border-t-2 border-r border-gray-300 px-1 py-2 text-center text-xs font-bold ${
+                      className={`border-t-2 border-r border-gray-300 px-1 py-2 text-center text-xs font-bold min-w-[50px] ${
                         isToday(day) ? 'bg-indigo-100 text-indigo-700' : 'text-gray-700'
                       }`}
                     >

@@ -145,7 +145,35 @@ async function initDatabase() {
     console.log('  ✓ Clients table ready')
 
     // ============================================
-    // 5. Create projects table
+    // 5. Create project_types table
+    // ============================================
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS project_types (
+        id SERIAL PRIMARY KEY,
+        type_name VARCHAR(100) NOT NULL UNIQUE,
+        description TEXT,
+        is_active BOOLEAN DEFAULT TRUE NOT NULL,
+        display_order INTEGER DEFAULT 0,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP NOT NULL,
+        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP NOT NULL
+      )
+    `)
+
+    // Seed default project types if table is empty
+    await client.query(`
+      INSERT INTO project_types (type_name, description, display_order)
+      SELECT * FROM (VALUES
+        ('Days Pool', 'Time-based billing with a pool of available days', 1),
+        ('Fixed Price', 'Fixed price contract for defined deliverables', 2),
+        ('T&M', 'Time and Materials billing', 3)
+      ) AS v(type_name, description, display_order)
+      WHERE NOT EXISTS (SELECT 1 FROM project_types)
+    `)
+
+    console.log('  ✓ Project types table ready')
+
+    // ============================================
+    // 6. Create projects table
     // ============================================
     await client.query(`
       CREATE TABLE IF NOT EXISTS projects (
@@ -181,8 +209,50 @@ async function initDatabase() {
 
     console.log('  ✓ Projects table ready')
 
+    // Add 'archived' status to projects constraint (migration for soft delete)
+    await client.query(`
+      DO $$
+      BEGIN
+        IF EXISTS (
+          SELECT 1 FROM information_schema.table_constraints
+          WHERE constraint_name = 'check_project_status' AND table_name = 'projects'
+        ) THEN
+          ALTER TABLE projects DROP CONSTRAINT check_project_status;
+        END IF;
+        ALTER TABLE projects ADD CONSTRAINT check_project_status
+          CHECK (status IN ('created', 'in_progress', 'frozen', 'closed', 'archived'));
+      END $$;
+    `)
+
+    // Add project_type_id column to projects (migration)
+    await client.query(`
+      DO $$
+      BEGIN
+        IF NOT EXISTS (
+          SELECT 1 FROM information_schema.columns
+          WHERE table_name = 'projects' AND column_name = 'project_type_id'
+        ) THEN
+          ALTER TABLE projects ADD COLUMN project_type_id INTEGER REFERENCES project_types(id) ON DELETE SET NULL;
+          CREATE INDEX IF NOT EXISTS idx_projects_project_type_id ON projects(project_type_id);
+        END IF;
+      END $$;
+    `)
+
+    // Add erp_ref column to projects (migration)
+    await client.query(`
+      DO $$
+      BEGIN
+        IF NOT EXISTS (
+          SELECT 1 FROM information_schema.columns
+          WHERE table_name = 'projects' AND column_name = 'erp_ref'
+        ) THEN
+          ALTER TABLE projects ADD COLUMN erp_ref VARCHAR(100);
+        END IF;
+      END $$;
+    `)
+
     // ============================================
-    // 6. Create project_users table (N-N)
+    // 7. Create project_users table (N-N)
     // ============================================
     await client.query(`
       CREATE TABLE IF NOT EXISTS project_users (
@@ -462,16 +532,26 @@ app.get('/api/users/:userId/projects', async (req, res) => {
           u.username as project_manager_username,
           u.first_name as project_manager_first_name,
           u.last_name as project_manager_last_name,
+          pt.type_name as project_type_name,
           COUNT(DISTINCT pu.user_id) as team_size,
           COUNT(DISTINCT t.id) as total_tasks,
-          COUNT(DISTINCT CASE WHEN t.status = 'done' THEN t.id END) as completed_tasks
+          COUNT(DISTINCT CASE WHEN t.status = 'done' THEN t.id END) as completed_tasks,
+          COALESCE(SUM(t.sold_days), 0) as total_sold_days,
+          COALESCE(SUM(t.remaining_hours), 0) as total_remaining_hours,
+          COALESCE((
+            SELECT SUM(te.hours)
+            FROM timesheet_entries te
+            JOIN tasks t2 ON te.task_id = t2.id
+            WHERE t2.project_id = p.id
+          ), 0) as total_hours_spent
         FROM projects p
         LEFT JOIN clients c ON p.client_id = c.id
         LEFT JOIN users u ON p.project_manager_id = u.id
+        LEFT JOIN project_types pt ON p.project_type_id = pt.id
         LEFT JOIN project_users pu ON p.id = pu.project_id
         LEFT JOIN tasks t ON p.id = t.project_id AND t.parent_task_id IS NULL
         WHERE p.status IN ('created', 'in_progress')
-        GROUP BY p.id, c.client_name, u.username, u.first_name, u.last_name
+        GROUP BY p.id, c.client_name, u.username, u.first_name, u.last_name, pt.type_name
         ORDER BY p.created_at DESC
       `
       queryParams = []
@@ -484,16 +564,26 @@ app.get('/api/users/:userId/projects', async (req, res) => {
           u.username as project_manager_username,
           u.first_name as project_manager_first_name,
           u.last_name as project_manager_last_name,
+          pt.type_name as project_type_name,
           COUNT(DISTINCT pu.user_id) as team_size,
           COUNT(DISTINCT t.id) as total_tasks,
-          COUNT(DISTINCT CASE WHEN t.status = 'done' THEN t.id END) as completed_tasks
+          COUNT(DISTINCT CASE WHEN t.status = 'done' THEN t.id END) as completed_tasks,
+          COALESCE(SUM(t.sold_days), 0) as total_sold_days,
+          COALESCE(SUM(t.remaining_hours), 0) as total_remaining_hours,
+          COALESCE((
+            SELECT SUM(te.hours)
+            FROM timesheet_entries te
+            JOIN tasks t2 ON te.task_id = t2.id
+            WHERE t2.project_id = p.id
+          ), 0) as total_hours_spent
         FROM projects p
         LEFT JOIN clients c ON p.client_id = c.id
         LEFT JOIN users u ON p.project_manager_id = u.id
+        LEFT JOIN project_types pt ON p.project_type_id = pt.id
         LEFT JOIN project_users pu ON p.id = pu.project_id
         LEFT JOIN tasks t ON p.id = t.project_id AND t.parent_task_id IS NULL
         WHERE p.project_manager_id = $1 AND p.status IN ('created', 'in_progress')
-        GROUP BY p.id, c.client_name, u.username, u.first_name, u.last_name
+        GROUP BY p.id, c.client_name, u.username, u.first_name, u.last_name, pt.type_name
         ORDER BY p.created_at DESC
       `
       queryParams = [userId]
@@ -506,17 +596,27 @@ app.get('/api/users/:userId/projects', async (req, res) => {
           u.username as project_manager_username,
           u.first_name as project_manager_first_name,
           u.last_name as project_manager_last_name,
+          pt.type_name as project_type_name,
           COUNT(DISTINCT pu.user_id) as team_size,
           COUNT(DISTINCT t.id) as total_tasks,
-          COUNT(DISTINCT CASE WHEN t.status = 'done' THEN t.id END) as completed_tasks
+          COUNT(DISTINCT CASE WHEN t.status = 'done' THEN t.id END) as completed_tasks,
+          COALESCE(SUM(t.sold_days), 0) as total_sold_days,
+          COALESCE(SUM(t.remaining_hours), 0) as total_remaining_hours,
+          COALESCE((
+            SELECT SUM(te.hours)
+            FROM timesheet_entries te
+            JOIN tasks t2 ON te.task_id = t2.id
+            WHERE t2.project_id = p.id
+          ), 0) as total_hours_spent
         FROM projects p
         INNER JOIN project_users pu_filter ON p.id = pu_filter.project_id AND pu_filter.user_id = $1
         LEFT JOIN clients c ON p.client_id = c.id
         LEFT JOIN users u ON p.project_manager_id = u.id
+        LEFT JOIN project_types pt ON p.project_type_id = pt.id
         LEFT JOIN project_users pu ON p.id = pu.project_id
         LEFT JOIN tasks t ON p.id = t.project_id AND t.parent_task_id IS NULL
         WHERE p.status IN ('created', 'in_progress')
-        GROUP BY p.id, c.client_name, u.username, u.first_name, u.last_name
+        GROUP BY p.id, c.client_name, u.username, u.first_name, u.last_name, pt.type_name
         ORDER BY p.created_at DESC
       `
       queryParams = [userId]
@@ -578,6 +678,19 @@ app.post('/api/clients', async (req, res) => {
   }
 })
 
+// Get all project types
+app.get('/api/project-types', async (req, res) => {
+  try {
+    const result = await pool.query(
+      'SELECT id, type_name, description FROM project_types WHERE is_active = true ORDER BY display_order ASC'
+    )
+    res.json({ projectTypes: result.rows })
+  } catch (error) {
+    console.error('Get project types error:', error)
+    res.status(500).json({ error: 'Failed to fetch project types' })
+  }
+})
+
 // Get all project managers (users with project_manager or administrator role)
 app.get('/api/users/project-managers', async (req, res) => {
   try {
@@ -623,6 +736,152 @@ app.post('/api/projects', async (req, res) => {
   }
 })
 
+// Update project
+app.put('/api/projects/:projectId', async (req, res) => {
+  const { projectId } = req.params
+  const { project_name, description, status, project_type_id, erp_ref } = req.body
+
+  // Validate status if provided (archived is not allowed via update)
+  const validStatuses = ['created', 'in_progress', 'frozen', 'closed']
+  if (status && !validStatuses.includes(status)) {
+    return res.status(400).json({ error: 'Invalid status. Allowed: created, in_progress, frozen, closed' })
+  }
+
+  try {
+    // Check if project exists
+    const existingProject = await pool.query('SELECT id FROM projects WHERE id = $1', [projectId])
+    if (existingProject.rows.length === 0) {
+      return res.status(404).json({ error: 'Project not found' })
+    }
+
+    // Validate project_type_id if provided
+    if (project_type_id !== undefined && project_type_id !== null) {
+      const typeExists = await pool.query('SELECT id FROM project_types WHERE id = $1 AND is_active = true', [project_type_id])
+      if (typeExists.rows.length === 0) {
+        return res.status(400).json({ error: 'Invalid project type' })
+      }
+    }
+
+    // Build dynamic update
+    const updates: string[] = []
+    const values: any[] = []
+    let paramIndex = 1
+
+    if (project_name !== undefined) {
+      updates.push(`project_name = $${paramIndex++}`)
+      values.push(project_name)
+    }
+    if (description !== undefined) {
+      updates.push(`description = $${paramIndex++}`)
+      values.push(description)
+    }
+    if (status !== undefined) {
+      updates.push(`status = $${paramIndex++}`)
+      values.push(status)
+    }
+    if (project_type_id !== undefined) {
+      updates.push(`project_type_id = $${paramIndex++}`)
+      values.push(project_type_id)
+    }
+    if (erp_ref !== undefined) {
+      updates.push(`erp_ref = $${paramIndex++}`)
+      values.push(erp_ref)
+    }
+
+    if (updates.length === 0) {
+      return res.status(400).json({ error: 'No fields to update' })
+    }
+
+    updates.push(`updated_at = CURRENT_TIMESTAMP`)
+    values.push(projectId)
+
+    const result = await pool.query(
+      `UPDATE projects SET ${updates.join(', ')} WHERE id = $${paramIndex}
+       RETURNING *`,
+      values
+    )
+
+    // Get full project details with joins
+    const projectResult = await pool.query(
+      `SELECT p.*, c.client_name,
+              u.username as pm_username, u.first_name as pm_first_name, u.last_name as pm_last_name,
+              pt.type_name as project_type_name
+       FROM projects p
+       LEFT JOIN clients c ON p.client_id = c.id
+       LEFT JOIN users u ON p.project_manager_id = u.id
+       LEFT JOIN project_types pt ON p.project_type_id = pt.id
+       WHERE p.id = $1`,
+      [projectId]
+    )
+
+    res.json({ project: projectResult.rows[0] })
+  } catch (error) {
+    console.error('Update project error:', error)
+    res.status(500).json({ error: 'Failed to update project' })
+  }
+})
+
+// Soft delete project (requires password confirmation)
+app.delete('/api/projects/:projectId', async (req, res) => {
+  const { projectId } = req.params
+  const { user_id, password } = req.body
+
+  if (!user_id || !password) {
+    return res.status(400).json({ error: 'User ID and password are required for deletion' })
+  }
+
+  try {
+    // 1. Verify user exists and get their password hash
+    const userResult = await pool.query(
+      'SELECT id, password, user_type FROM users WHERE id = $1 AND is_active = TRUE',
+      [user_id]
+    )
+
+    if (userResult.rows.length === 0) {
+      return res.status(404).json({ error: 'User not found' })
+    }
+
+    // 2. Verify the password
+    const isValidPassword = await bcrypt.compare(password, userResult.rows[0].password)
+    if (!isValidPassword) {
+      return res.status(401).json({ error: 'Invalid password' })
+    }
+
+    // 3. Check if project exists and get PM
+    const projectResult = await pool.query(
+      'SELECT id, project_manager_id, status FROM projects WHERE id = $1',
+      [projectId]
+    )
+
+    if (projectResult.rows.length === 0) {
+      return res.status(404).json({ error: 'Project not found' })
+    }
+
+    if (projectResult.rows[0].status === 'archived') {
+      return res.status(400).json({ error: 'Project is already archived' })
+    }
+
+    // 4. Check permissions (admin or PM of the project)
+    const userType = userResult.rows[0].user_type
+    const isPM = projectResult.rows[0].project_manager_id === parseInt(user_id)
+
+    if (userType !== 'administrator' && !isPM) {
+      return res.status(403).json({ error: 'Not authorized to archive this project' })
+    }
+
+    // 5. Soft delete: set status to 'archived'
+    await pool.query(
+      `UPDATE projects SET status = 'archived', updated_at = CURRENT_TIMESTAMP WHERE id = $1`,
+      [projectId]
+    )
+
+    res.json({ message: 'Project archived successfully' })
+  } catch (error) {
+    console.error('Delete project error:', error)
+    res.status(500).json({ error: 'Failed to archive project' })
+  }
+})
+
 // Get project details with stages, tasks and subtasks
 app.get('/api/projects/:projectId', async (req, res) => {
   const { projectId } = req.params
@@ -631,10 +890,12 @@ app.get('/api/projects/:projectId', async (req, res) => {
     // Get project details
     const projectResult = await pool.query(
       `SELECT p.*, c.client_name,
-              u.username as pm_username, u.first_name as pm_first_name, u.last_name as pm_last_name
+              u.username as pm_username, u.first_name as pm_first_name, u.last_name as pm_last_name,
+              pt.type_name as project_type_name
        FROM projects p
        LEFT JOIN clients c ON p.client_id = c.id
        LEFT JOIN users u ON p.project_manager_id = u.id
+       LEFT JOIN project_types pt ON p.project_type_id = pt.id
        WHERE p.id = $1`,
       [projectId]
     )
@@ -1344,6 +1605,12 @@ app.post('/api/auth/login', async (req, res) => {
     if (!isValidPassword) {
       return res.status(401).json({ error: 'Invalid credentials' })
     }
+
+    // Update last_login_at timestamp
+    await pool.query(
+      'UPDATE users SET last_login_at = CURRENT_TIMESTAMP WHERE id = $1',
+      [user.id]
+    )
 
     // Don't send password back to client
     const { password: _, ...userWithoutPassword } = user

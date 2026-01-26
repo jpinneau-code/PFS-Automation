@@ -89,6 +89,15 @@ interface Project {
   pm_first_name: string | null
   pm_last_name: string | null
   created_at: string
+  project_type_id: number | null
+  project_type_name: string | null
+  erp_ref: string | null
+}
+
+interface ProjectType {
+  id: number
+  type_name: string
+  description: string | null
 }
 
 type DragType = 'stage' | 'task' | 'subtask'
@@ -151,6 +160,26 @@ export default function ProjectFollowUpPage() {
   // Inline edit state for Dates
   const [editingStartDateTaskId, setEditingStartDateTaskId] = useState<number | null>(null)
   const [editingEndDateTaskId, setEditingEndDateTaskId] = useState<number | null>(null)
+
+  // Project edit modal state
+  const [showEditProjectModal, setShowEditProjectModal] = useState(false)
+  const [projectFormData, setProjectFormData] = useState({
+    project_name: '',
+    description: '',
+    status: '',
+    project_type_id: null as number | null,
+    erp_ref: ''
+  })
+  const [projectFormError, setProjectFormError] = useState('')
+  const [projectTypes, setProjectTypes] = useState<ProjectType[]>([])
+  const [loadingProjectTypes, setLoadingProjectTypes] = useState(false)
+  const [isProjectSaving, setIsProjectSaving] = useState(false)
+
+  // Project delete modal state
+  const [showDeleteProjectModal, setShowDeleteProjectModal] = useState(false)
+  const [deletePassword, setDeletePassword] = useState('')
+  const [deletePasswordError, setDeletePasswordError] = useState('')
+  const [isDeleting, setIsDeleting] = useState(false)
 
   // Gantt state
   const [ganttWeekOffset, setGanttWeekOffset] = useState(0)
@@ -620,6 +649,104 @@ export default function ProjectFollowUpPage() {
         start_date: task.start_date || '',
         due_date: task.due_date || ''
       })
+    }
+  }
+
+  // ============================================
+  // Project Edit/Delete handlers
+  // ============================================
+
+  const openEditProjectModal = async () => {
+    if (!project) return
+    setProjectFormData({
+      project_name: project.project_name,
+      description: project.description || '',
+      status: project.status,
+      project_type_id: project.project_type_id,
+      erp_ref: project.erp_ref || ''
+    })
+    setProjectFormError('')
+    setShowEditProjectModal(true)
+
+    // Fetch project types if not already loaded
+    if (projectTypes.length === 0) {
+      setLoadingProjectTypes(true)
+      try {
+        const { projectTypesAPI } = await import('@/lib/api')
+        const data = await projectTypesAPI.getAll()
+        setProjectTypes(data.projectTypes)
+      } catch (err) {
+        console.error('Error fetching project types:', err)
+      } finally {
+        setLoadingProjectTypes(false)
+      }
+    }
+  }
+
+  const handleUpdateProject = async () => {
+    if (!project) return
+    if (!projectFormData.project_name.trim()) {
+      setProjectFormError('Project name is required')
+      return
+    }
+
+    setIsProjectSaving(true)
+    setProjectFormError('')
+
+    try {
+      const { projectsAPI } = await import('@/lib/api')
+      const data = await projectsAPI.update(project.id, {
+        project_name: projectFormData.project_name.trim(),
+        description: projectFormData.description.trim() || null,
+        status: projectFormData.status,
+        project_type_id: projectFormData.project_type_id,
+        erp_ref: projectFormData.erp_ref.trim() || null
+      })
+
+      setProject(data.project)
+      setShowEditProjectModal(false)
+    } catch (err: any) {
+      console.error('Error updating project:', err)
+      setProjectFormError(err.response?.data?.error || 'Failed to update project')
+    } finally {
+      setIsProjectSaving(false)
+    }
+  }
+
+  const openDeleteProjectModal = () => {
+    setDeletePassword('')
+    setDeletePasswordError('')
+    setShowDeleteProjectModal(true)
+  }
+
+  const handleDeleteProject = async () => {
+    if (!project) return
+    if (!deletePassword) {
+      setDeletePasswordError('Password is required')
+      return
+    }
+
+    setIsDeleting(true)
+    setDeletePasswordError('')
+
+    try {
+      const userStr = localStorage.getItem('user')
+      if (!userStr) {
+        router.push('/login')
+        return
+      }
+      const currentUser = JSON.parse(userStr)
+
+      const { projectsAPI } = await import('@/lib/api')
+      await projectsAPI.delete(project.id, currentUser.id, deletePassword)
+
+      // Redirect to dashboard after successful deletion
+      router.push('/dashboard')
+    } catch (err: any) {
+      console.error('Error deleting project:', err)
+      setDeletePasswordError(err.response?.data?.error || 'Failed to archive project')
+    } finally {
+      setIsDeleting(false)
     }
   }
 
@@ -1542,6 +1669,20 @@ export default function ProjectFollowUpPage() {
                   <span>{project?.client_name}</span>
                   <span>-</span>
                   <span>PM: {project?.pm_first_name || project?.pm_username}</span>
+                  {project?.project_type_name && (
+                    <>
+                      <span>-</span>
+                      <span className="px-2 py-0.5 bg-indigo-100 text-indigo-700 rounded-full text-xs font-medium">
+                        {project.project_type_name}
+                      </span>
+                    </>
+                  )}
+                  {project?.erp_ref && (
+                    <>
+                      <span>-</span>
+                      <span className="text-gray-600">ERP: {project.erp_ref}</span>
+                    </>
+                  )}
                 </div>
               </div>
             </div>
@@ -1551,6 +1692,28 @@ export default function ProjectFollowUpPage() {
                 <div className="text-2xl font-bold text-indigo-600">
                   {formatDays(calculateProjectTotalDays())}j
                 </div>
+              </div>
+
+              {/* Project Edit/Delete buttons */}
+              <div className="flex items-center gap-2 ml-4 border-l pl-4">
+                <button
+                  onClick={openEditProjectModal}
+                  className="p-2 text-gray-500 hover:text-indigo-600 hover:bg-indigo-50 rounded-md transition-colors"
+                  title="Edit project"
+                >
+                  <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z" />
+                  </svg>
+                </button>
+                <button
+                  onClick={openDeleteProjectModal}
+                  className="p-2 text-gray-500 hover:text-red-600 hover:bg-red-50 rounded-md transition-colors"
+                  title="Archive project"
+                >
+                  <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
+                  </svg>
+                </button>
               </div>
             </div>
           </div>
@@ -1933,6 +2096,190 @@ export default function ProjectFollowUpPage() {
                 className="px-4 py-2 bg-red-600 text-white rounded-md hover:bg-red-700"
               >
                 Delete
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Edit Project Modal */}
+      {showEditProjectModal && (
+        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
+          <div className="bg-white rounded-lg shadow-xl w-full max-w-md mx-4">
+            <div className="flex items-center justify-between p-4 border-b">
+              <h3 className="text-lg font-semibold text-gray-900">
+                Edit Project
+              </h3>
+              <button
+                onClick={() => setShowEditProjectModal(false)}
+                className="text-gray-400 hover:text-gray-600"
+              >
+                <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M6 18L18 6M6 6l12 12" />
+                </svg>
+              </button>
+            </div>
+
+            <div className="p-4 space-y-4">
+              {projectFormError && (
+                <div className="p-3 bg-red-50 border border-red-200 rounded-md text-sm text-red-600">
+                  {projectFormError}
+                </div>
+              )}
+
+              <div>
+                <label htmlFor="project_name" className="block text-sm font-medium text-gray-700 mb-1">
+                  Project Name *
+                </label>
+                <input
+                  type="text"
+                  id="project_name"
+                  value={projectFormData.project_name}
+                  onChange={(e) => setProjectFormData(prev => ({ ...prev, project_name: e.target.value }))}
+                  className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                  placeholder="Project name"
+                />
+              </div>
+
+              <div>
+                <label htmlFor="description" className="block text-sm font-medium text-gray-700 mb-1">
+                  Description
+                </label>
+                <textarea
+                  id="description"
+                  value={projectFormData.description}
+                  onChange={(e) => setProjectFormData(prev => ({ ...prev, description: e.target.value }))}
+                  className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                  rows={3}
+                  placeholder="Project description"
+                />
+              </div>
+
+              <div>
+                <label htmlFor="status" className="block text-sm font-medium text-gray-700 mb-1">
+                  Status
+                </label>
+                <select
+                  id="status"
+                  value={projectFormData.status}
+                  onChange={(e) => setProjectFormData(prev => ({ ...prev, status: e.target.value }))}
+                  className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                >
+                  <option value="created">Created</option>
+                  <option value="in_progress">In Progress</option>
+                  <option value="frozen">Frozen</option>
+                  <option value="closed">Closed</option>
+                </select>
+              </div>
+
+              <div>
+                <label htmlFor="project_type" className="block text-sm font-medium text-gray-700 mb-1">
+                  Project Type
+                </label>
+                <select
+                  id="project_type"
+                  value={projectFormData.project_type_id ?? ''}
+                  onChange={(e) => setProjectFormData(prev => ({
+                    ...prev,
+                    project_type_id: e.target.value ? parseInt(e.target.value) : null
+                  }))}
+                  className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                  disabled={loadingProjectTypes}
+                >
+                  <option value="">No type selected</option>
+                  {projectTypes.map(type => (
+                    <option key={type.id} value={type.id}>{type.type_name}</option>
+                  ))}
+                </select>
+              </div>
+
+              <div>
+                <label htmlFor="erp_ref" className="block text-sm font-medium text-gray-700 mb-1">
+                  ERP Ref.
+                </label>
+                <input
+                  type="text"
+                  id="erp_ref"
+                  value={projectFormData.erp_ref}
+                  onChange={(e) => setProjectFormData(prev => ({ ...prev, erp_ref: e.target.value }))}
+                  className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                  placeholder="ERP reference"
+                />
+              </div>
+
+              <div className="flex gap-3 pt-2">
+                <button
+                  type="button"
+                  onClick={() => setShowEditProjectModal(false)}
+                  className="flex-1 px-4 py-2 border border-gray-300 rounded-md text-gray-700 hover:bg-gray-50 transition-colors"
+                >
+                  Cancel
+                </button>
+                <button
+                  onClick={handleUpdateProject}
+                  disabled={isProjectSaving}
+                  className="flex-1 px-4 py-2 bg-indigo-600 text-white rounded-md hover:bg-indigo-700 transition-colors disabled:opacity-50"
+                >
+                  {isProjectSaving ? 'Saving...' : 'Save'}
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Delete Project Modal with Password Confirmation */}
+      {showDeleteProjectModal && (
+        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
+          <div className="bg-white rounded-lg shadow-xl w-full max-w-md mx-4 p-6">
+            <div className="flex items-center gap-4 mb-4">
+              <div className="flex-shrink-0 w-12 h-12 rounded-full bg-red-100 flex items-center justify-center">
+                <svg className="w-6 h-6 text-red-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
+                </svg>
+              </div>
+              <div>
+                <h3 className="text-lg font-semibold text-gray-900">Archive Project</h3>
+                <p className="text-sm text-gray-500">This action requires confirmation</p>
+              </div>
+            </div>
+
+            <p className="text-gray-700 mb-4">
+              Are you sure you want to archive the project{' '}
+              <span className="font-semibold">{project?.project_name}</span>?
+              The project will be hidden but can be restored by an administrator.
+            </p>
+
+            <div className="mb-4">
+              <label htmlFor="delete_password" className="block text-sm font-medium text-gray-700 mb-1">
+                Enter your password to confirm
+              </label>
+              <input
+                type="password"
+                id="delete_password"
+                value={deletePassword}
+                onChange={(e) => setDeletePassword(e.target.value)}
+                className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-red-500"
+                placeholder="Your password"
+              />
+              {deletePasswordError && (
+                <p className="mt-1 text-sm text-red-600">{deletePasswordError}</p>
+              )}
+            </div>
+
+            <div className="flex gap-3">
+              <button
+                onClick={() => { setShowDeleteProjectModal(false); setDeletePassword(''); setDeletePasswordError(''); }}
+                className="flex-1 px-4 py-2 border border-gray-300 rounded-md text-gray-700 hover:bg-gray-50 transition-colors"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={handleDeleteProject}
+                disabled={isDeleting || !deletePassword}
+                className="flex-1 px-4 py-2 bg-red-600 text-white rounded-md hover:bg-red-700 transition-colors disabled:opacity-50"
+              >
+                {isDeleting ? 'Archiving...' : 'Archive'}
               </button>
             </div>
           </div>

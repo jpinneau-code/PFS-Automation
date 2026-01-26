@@ -14,6 +14,10 @@ interface Project {
   project_manager_first_name?: string
   project_manager_last_name?: string
   project_manager_username: string
+  total_sold_days: number
+  total_remaining_hours: number
+  total_hours_spent: number
+  project_type_name?: string | null
 }
 
 interface Client {
@@ -351,9 +355,25 @@ export default function DashboardPage() {
           ) : (
             <div className="space-y-4">
               {projects.map((project) => {
-                const completionRate = project.total_tasks > 0
-                  ? Math.round((project.completed_tasks / project.total_tasks) * 100)
-                  : 0
+                // Calcul de l'avancement réel basé sur le budget
+                const soldDays = parseFloat(String(project.total_sold_days)) || 0
+                const spentDays = (parseFloat(String(project.total_hours_spent)) || 0) / 8
+                const remainingDays = (parseFloat(String(project.total_remaining_hours)) || 0) / 8
+
+                const budgetUsed = soldDays > 0
+                  ? Math.round(((spentDays + remainingDays) / soldDays) * 100)
+                  : null
+
+                // Couleurs basées sur le budget utilisé
+                const barColorClass = budgetUsed === null ? 'bg-gray-300' :
+                  budgetUsed < 100 ? 'bg-green-500' :
+                  budgetUsed === 100 ? 'bg-orange-500' :
+                  'bg-red-500'
+
+                const textColorClass = budgetUsed === null ? 'text-gray-500' :
+                  budgetUsed < 100 ? 'text-green-600' :
+                  budgetUsed === 100 ? 'text-orange-600' :
+                  'text-red-600'
 
                 return (
                   <div
@@ -377,6 +397,11 @@ export default function DashboardPage() {
                              project.status === 'created' ? 'Created' :
                              project.status === 'frozen' ? 'Frozen' : 'Closed'}
                           </span>
+                          {project.project_type_name && (
+                            <span className="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-indigo-100 text-indigo-700">
+                              {project.project_type_name}
+                            </span>
+                          )}
                         </div>
 
                         <div className="flex flex-wrap items-center gap-4 text-sm text-gray-600">
@@ -405,22 +430,22 @@ export default function DashboardPage() {
                         </div>
 
                         <div className="mt-3">
-                          <div className="flex items-center justify-between text-sm mb-1">
-                            <span className="text-gray-600">
-                              {project.completed_tasks} / {project.total_tasks} tasks completed
-                            </span>
-                            <span className="font-medium text-gray-900">{completionRate}%</span>
-                          </div>
-                          <div className="w-full bg-gray-200 rounded-full h-2">
-                            <div
-                              className={`h-2 rounded-full transition-all ${
-                                completionRate === 100 ? 'bg-green-500' :
-                                completionRate >= 50 ? 'bg-blue-500' :
-                                'bg-yellow-500'
-                              }`}
-                              style={{ width: `${completionRate}%` }}
-                            />
-                          </div>
+                          {budgetUsed === null ? (
+                            <span className="text-sm text-gray-400">No budget defined</span>
+                          ) : (
+                            <>
+                              <div className="flex items-center justify-between text-sm mb-1">
+                                <span className="text-gray-600">Forecast</span>
+                                <span className={`font-medium ${textColorClass}`}>{budgetUsed}%</span>
+                              </div>
+                              <div className="w-full bg-gray-200 rounded-full h-2">
+                                <div
+                                  className={`h-2 rounded-full transition-all ${barColorClass}`}
+                                  style={{ width: `${Math.min(budgetUsed, 100)}%` }}
+                                />
+                              </div>
+                            </>
+                          )}
                         </div>
                       </div>
 

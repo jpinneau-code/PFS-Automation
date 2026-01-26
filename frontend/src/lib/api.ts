@@ -73,6 +73,24 @@ export const projectsAPI = {
     const response = await api.put(`/api/projects/${projectId}/stages/reorder`, { stageIds })
     return response.data
   },
+
+  update: async (projectId: number, data: {
+    project_name?: string
+    description?: string | null
+    status?: string
+    project_type_id?: number | null
+    erp_ref?: string | null
+  }) => {
+    const response = await api.put(`/api/projects/${projectId}`, data)
+    return response.data
+  },
+
+  delete: async (projectId: number, userId: number, password: string) => {
+    const response = await api.delete(`/api/projects/${projectId}`, {
+      data: { user_id: userId, password }
+    })
+    return response.data
+  },
 }
 
 // Stages API functions
@@ -153,6 +171,14 @@ export const clientsAPI = {
 
   create: async (client_name: string) => {
     const response = await api.post('/api/clients', { client_name })
+    return response.data
+  },
+}
+
+// Project Types API functions
+export const projectTypesAPI = {
+  getAll: async () => {
+    const response = await api.get('/api/project-types')
     return response.data
   },
 }
