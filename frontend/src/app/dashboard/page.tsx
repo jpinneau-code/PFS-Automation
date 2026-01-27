@@ -353,40 +353,84 @@ export default function DashboardPage() {
               </p>
             </div>
           ) : (
-            <div className="space-y-4">
-              {projects.map((project) => {
-                // Calcul de l'avancement réel basé sur le budget
-                const soldDays = parseFloat(String(project.total_sold_days)) || 0
-                const spentDays = (parseFloat(String(project.total_hours_spent)) || 0) / 8
-                const remainingDays = (parseFloat(String(project.total_remaining_hours)) || 0) / 8
+            <div className="overflow-x-auto">
+              <table className="min-w-full divide-y divide-gray-200">
+                <thead className="bg-gray-50">
+                  <tr>
+                    <th scope="col" className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                      Client
+                    </th>
+                    <th scope="col" className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                      Project
+                    </th>
+                    <th scope="col" className="px-4 py-3 text-center text-xs font-medium text-gray-500 uppercase tracking-wider">
+                      Status
+                    </th>
+                    <th scope="col" className="px-4 py-3 text-right text-xs font-medium text-gray-500 uppercase tracking-wider">
+                      Sold
+                    </th>
+                    <th scope="col" className="px-4 py-3 text-right text-xs font-medium text-gray-500 uppercase tracking-wider">
+                      Spent
+                    </th>
+                    <th scope="col" className="px-4 py-3 text-right text-xs font-medium text-gray-500 uppercase tracking-wider">
+                      Remaining
+                    </th>
+                    <th scope="col" className="px-4 py-3 text-right text-xs font-medium text-gray-500 uppercase tracking-wider">
+                      Forecast
+                    </th>
+                    <th scope="col" className="px-4 py-3 text-right text-xs font-medium text-gray-500 uppercase tracking-wider">
+                      Progress
+                    </th>
+                    <th scope="col" className="px-4 py-3 text-right text-xs font-medium text-gray-500 uppercase tracking-wider">
+                      Gap
+                    </th>
+                  </tr>
+                </thead>
+                <tbody className="bg-white divide-y divide-gray-200">
+                  {projects.map((project) => {
+                    // Calculations based on Dashboard-formula.md
+                    const soldDays = parseFloat(String(project.total_sold_days)) || 0
+                    const spentDays = (parseFloat(String(project.total_hours_spent)) || 0) / 8
+                    const remainingDays = (parseFloat(String(project.total_remaining_hours)) || 0) / 8
+                    const forecastDays = spentDays + remainingDays
 
-                const budgetUsed = soldDays > 0
-                  ? Math.round(((spentDays + remainingDays) / soldDays) * 100)
-                  : null
+                    // Advancement = Spent / Sold (percentage of sold days already spent)
+                    const advancementPercent = soldDays > 0 ? (spentDays / soldDays) * 100 : 0
 
-                // Couleurs basées sur le budget utilisé
-                const barColorClass = budgetUsed === null ? 'bg-gray-300' :
-                  budgetUsed < 100 ? 'bg-green-500' :
-                  budgetUsed === 100 ? 'bg-orange-500' :
-                  'bg-red-500'
+                    // Gap = (Forecast / Sold) - 1 (positive = over budget, negative = under budget)
+                    const gapPercent = soldDays > 0 ? ((forecastDays / soldDays) - 1) * 100 : 0
 
-                const textColorClass = budgetUsed === null ? 'text-gray-500' :
-                  budgetUsed < 100 ? 'text-green-600' :
-                  budgetUsed === 100 ? 'text-orange-600' :
-                  'text-red-600'
+                    // Format number with 1 decimal if needed
+                    const formatDays = (value: number) => {
+                      if (value === 0) return '-'
+                      return value % 1 === 0 ? value.toString() : value.toFixed(1)
+                    }
 
-                return (
-                  <div
-                    key={project.id}
-                    onClick={() => router.push(`/projects/${project.id}`)}
-                    className="border border-gray-200 rounded-lg p-4 hover:bg-gray-50 transition-colors cursor-pointer"
-                  >
-                    <div className="flex items-start justify-between">
-                      <div className="flex-1">
-                        <div className="flex items-center gap-2 mb-2">
-                          <h3 className="text-base font-semibold text-gray-900">
-                            {project.project_name}
-                          </h3>
+                    const formatPercent = (value: number) => {
+                      if (value === 0) return '0%'
+                      return `${value > 0 ? '+' : ''}${value.toFixed(0)}%`
+                    }
+
+                    return (
+                      <tr
+                        key={project.id}
+                        onClick={() => router.push(`/projects/${project.id}`)}
+                        className="hover:bg-gray-50 cursor-pointer transition-colors"
+                      >
+                        <td className="px-4 py-3 text-sm text-gray-900">
+                          {project.client_name}
+                        </td>
+                        <td className="px-4 py-3">
+                          <div className="flex items-center gap-2">
+                            <span className="text-sm font-medium text-gray-900">{project.project_name}</span>
+                            {project.project_type_name && (
+                              <span className="inline-flex items-center px-1.5 py-0.5 rounded text-xs font-medium bg-indigo-100 text-indigo-700">
+                                {project.project_type_name}
+                              </span>
+                            )}
+                          </div>
+                        </td>
+                        <td className="px-4 py-3 text-center">
                           <span className={`inline-flex items-center px-2 py-0.5 rounded text-xs font-medium ${
                             project.status === 'in_progress' ? 'bg-blue-100 text-blue-800' :
                             project.status === 'created' ? 'bg-gray-100 text-gray-800' :
@@ -397,67 +441,38 @@ export default function DashboardPage() {
                              project.status === 'created' ? 'Created' :
                              project.status === 'frozen' ? 'Frozen' : 'Closed'}
                           </span>
-                          {project.project_type_name && (
-                            <span className="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-indigo-100 text-indigo-700">
-                              {project.project_type_name}
+                        </td>
+                        <td className="px-4 py-3 text-sm text-right text-gray-900">
+                          {formatDays(soldDays)}d
+                        </td>
+                        <td className="px-4 py-3 text-sm text-right text-gray-900">
+                          {formatDays(spentDays)}d
+                        </td>
+                        <td className="px-4 py-3 text-sm text-right text-gray-900">
+                          {formatDays(remainingDays)}d
+                        </td>
+                        <td className="px-4 py-3 text-sm text-right text-gray-900 font-medium">
+                          {formatDays(forecastDays)}d
+                        </td>
+                        <td className="px-4 py-3 text-sm text-right">
+                          <span className="text-gray-900">
+                            {soldDays > 0 ? `${advancementPercent.toFixed(0)}%` : '-'}
+                          </span>
+                        </td>
+                        <td className="px-4 py-3 text-sm text-right">
+                          {soldDays > 0 && gapPercent !== 0 && gapPercent !== -100 ? (
+                            <span className={`font-medium ${gapPercent > 0 ? 'text-red-600' : 'text-green-600'}`}>
+                              {formatPercent(gapPercent)}
                             </span>
-                          )}
-                        </div>
-
-                        <div className="flex flex-wrap items-center gap-4 text-sm text-gray-600">
-                          <div className="flex items-center gap-1">
-                            <svg className="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M19 21V5a2 2 0 00-2-2H7a2 2 0 00-2 2v16m14 0h2m-2 0h-5m-9 0H3m2 0h5M9 7h1m-1 4h1m4-4h1m-1 4h1m-5 10v-5a1 1 0 011-1h2a1 1 0 011 1v5m-4 0h4" />
-                            </svg>
-                            <span>{project.client_name}</span>
-                          </div>
-
-                          <div className="flex items-center gap-1">
-                            <svg className="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M17 20h5v-2a3 3 0 00-5.356-1.857M17 20H7m10 0v-2c0-.656-.126-1.283-.356-1.857M7 20H2v-2a3 3 0 015.356-1.857M7 20v-2c0-.656.126-1.283.356-1.857m0 0a5.002 5.002 0 019.288 0M15 7a3 3 0 11-6 0 3 3 0 016 0zm6 3a2 2 0 11-4 0 2 2 0 014 0zM7 10a2 2 0 11-4 0 2 2 0 014 0z" />
-                            </svg>
-                            <span>{project.team_size} team member{project.team_size !== 1 ? 's' : ''}</span>
-                          </div>
-
-                          {user?.user_type === 'administrator' && (
-                            <div className="flex items-center gap-1">
-                              <svg className="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M16 7a4 4 0 11-8 0 4 4 0 018 0zM12 14a7 7 0 00-7 7h14a7 7 0 00-7-7z" />
-                              </svg>
-                              <span>PM: {project.project_manager_first_name || project.project_manager_username}</span>
-                            </div>
-                          )}
-                        </div>
-
-                        <div className="mt-3">
-                          {budgetUsed === null ? (
-                            <span className="text-sm text-gray-400">No budget defined</span>
                           ) : (
-                            <>
-                              <div className="flex items-center justify-between text-sm mb-1">
-                                <span className="text-gray-600">Forecast</span>
-                                <span className={`font-medium ${textColorClass}`}>{budgetUsed}%</span>
-                              </div>
-                              <div className="w-full bg-gray-200 rounded-full h-2">
-                                <div
-                                  className={`h-2 rounded-full transition-all ${barColorClass}`}
-                                  style={{ width: `${Math.min(budgetUsed, 100)}%` }}
-                                />
-                              </div>
-                            </>
+                            <span className="text-gray-400">-</span>
                           )}
-                        </div>
-                      </div>
-
-                      <button className="ml-4 text-gray-400 hover:text-gray-600">
-                        <svg className="h-5 w-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M9 5l7 7-7 7" />
-                        </svg>
-                      </button>
-                    </div>
-                  </div>
-                )
-              })}
+                        </td>
+                      </tr>
+                    )
+                  })}
+                </tbody>
+              </table>
             </div>
           )}
         </div>

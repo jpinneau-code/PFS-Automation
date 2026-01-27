@@ -18,7 +18,7 @@ interface TimesheetTask {
   name: string
   stage_id: number | null
   stage_name: string | null
-  sold_days: number  // Estimated days for the task
+  sold_days: number  // Sold days for the task
   remaining_hours: number | null
   last_remaining_update_total: number | null  // Total hours when remaining was last updated
   total_hours: number  // Current total hours from all timesheet entries
@@ -774,7 +774,7 @@ export default function TimesheetPage() {
                 Project / Task
               </th>
               <th className="sticky left-[250px] z-20 bg-gray-50 border-b border-r border-gray-200 px-2 py-2 text-center text-sm font-medium text-gray-700 w-[60px] min-w-[60px]">
-                Est.
+                Sold
               </th>
               <th className="sticky left-[310px] z-20 bg-gray-50 border-b border-r border-gray-200 px-2 py-2 text-center text-sm font-medium text-gray-700 w-[60px] min-w-[60px]">
                 Spent
@@ -849,7 +849,7 @@ export default function TimesheetPage() {
                           <span className="text-xs text-gray-500">({project.tasks.length})</span>
                         </div>
                       </td>
-                      {/* Empty estimated cell for project row */}
+                      {/* Empty sold cell for project row */}
                       <td className="sticky left-[250px] z-10 bg-indigo-50/50 border-b border-r border-gray-200 px-2 py-2 w-[60px] min-w-[60px]"></td>
                       {/* Empty spent cell for project row */}
                       <td className="sticky left-[310px] z-10 bg-indigo-50/50 border-b border-r border-gray-200 px-2 py-2 w-[60px] min-w-[60px]"></td>
@@ -890,7 +890,7 @@ export default function TimesheetPage() {
                             )}
                           </div>
                         </td>
-                        {/* Estimated column */}
+                        {/* Sold column */}
                         <td className="sticky left-[250px] z-10 bg-white border-b border-r border-gray-200 px-1 py-0.5 text-center w-[60px] min-w-[60px]">
                           <span className="text-xs text-gray-600">
                             {task.sold_days > 0 ? `${task.sold_days}d` : '-'}
@@ -999,7 +999,7 @@ export default function TimesheetPage() {
                   <td className="sticky left-0 z-10 bg-gray-100 border-t-2 border-r border-gray-300 px-4 py-2 text-sm text-gray-700 w-[250px] min-w-[250px]">
                     Daily total
                   </td>
-                  {/* Empty estimated cell for totals row */}
+                  {/* Empty sold cell for totals row */}
                   <td className="sticky left-[250px] z-10 bg-gray-100 border-t-2 border-r border-gray-300 px-2 py-2 w-[60px] min-w-[60px]"></td>
                   {/* Empty spent cell for totals row */}
                   <td className="sticky left-[310px] z-10 bg-gray-100 border-t-2 border-r border-gray-300 px-2 py-2 w-[60px] min-w-[60px]"></td>
