@@ -757,6 +757,29 @@ export default function ProjectFollowUpPage() {
     }
   }
 
+  const handleExportProject = async () => {
+    if (!project) return
+
+    try {
+      const { projectsAPI } = await import('@/lib/api')
+      const exportData = await projectsAPI.exportProject(project.id)
+
+      // Create and download the JSON file
+      const blob = new Blob([JSON.stringify(exportData, null, 2)], { type: 'application/json' })
+      const url = URL.createObjectURL(blob)
+      const a = document.createElement('a')
+      a.href = url
+      a.download = `project_${project.project_name.replace(/[^a-z0-9]/gi, '_')}_${new Date().toISOString().split('T')[0]}.json`
+      document.body.appendChild(a)
+      a.click()
+      document.body.removeChild(a)
+      URL.revokeObjectURL(url)
+    } catch (err: any) {
+      console.error('Error exporting project:', err)
+      setError('Failed to export project')
+    }
+  }
+
   // ============================================
   // Drag & Drop handlers (keeping existing logic)
   // ============================================
@@ -1756,6 +1779,15 @@ export default function ProjectFollowUpPage() {
                 >
                   <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                     <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
+                  </svg>
+                </button>
+                <button
+                  onClick={handleExportProject}
+                  className="p-2 text-gray-500 hover:text-green-600 hover:bg-green-50 rounded-md transition-colors"
+                  title="Export project"
+                >
+                  <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4" />
                   </svg>
                 </button>
               </div>

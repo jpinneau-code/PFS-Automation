@@ -96,6 +96,16 @@ export const projectsAPI = {
     const response = await api.get(`/api/projects/${projectId}/timesheet-summary`)
     return response.data
   },
+
+  exportProject: async (projectId: number) => {
+    const response = await api.get(`/api/projects/${projectId}/export`)
+    return response.data
+  },
+
+  importProject: async (data: any) => {
+    const response = await api.post('/api/projects/import', data)
+    return response.data
+  },
 }
 
 // Stages API functions

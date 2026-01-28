@@ -59,6 +59,13 @@ export default function DashboardPage() {
     pendingTasks: 0,
   })
 
+  // Import project state
+  const [showImportModal, setShowImportModal] = useState(false)
+  const [importFile, setImportFile] = useState<File | null>(null)
+  const [isImporting, setIsImporting] = useState(false)
+  const [importError, setImportError] = useState('')
+  const [importResult, setImportResult] = useState<any>(null)
+
   useEffect(() => {
     // Check if user is authenticated
     const userStr = localStorage.getItem('user')
@@ -183,6 +190,47 @@ export default function DashboardPage() {
     localStorage.removeItem('user')
     // Redirect to login page
     router.push('/login')
+  }
+
+  const openImportModal = () => {
+    setShowImportModal(true)
+    setImportFile(null)
+    setImportError('')
+    setImportResult(null)
+  }
+
+  const handleImportProject = async () => {
+    if (!importFile) {
+      setImportError('Please select a file')
+      return
+    }
+
+    setIsImporting(true)
+    setImportError('')
+
+    try {
+      const fileContent = await importFile.text()
+      const importData = JSON.parse(fileContent)
+
+      const { projectsAPI } = await import('@/lib/api')
+      const result = await projectsAPI.importProject(importData)
+
+      setImportResult(result)
+
+      // Refresh projects list
+      if (user) {
+        fetchUserProjects(user.id)
+      }
+    } catch (error: any) {
+      console.error('Error importing project:', error)
+      if (error instanceof SyntaxError) {
+        setImportError('Invalid JSON file')
+      } else {
+        setImportError(error.response?.data?.error || 'Failed to import project')
+      }
+    } finally {
+      setIsImporting(false)
+    }
   }
 
   // Show loading while checking authentication
@@ -315,15 +363,26 @@ export default function DashboardPage() {
                 {user?.user_type === 'administrator' ? 'All Active Projects' : 'My Projects'}
               </h2>
               {(user?.user_type === 'administrator' || user?.user_type === 'project_manager') && (
-                <button
-                  onClick={openAddProjectModal}
-                  className="w-8 h-8 flex items-center justify-center bg-indigo-600 text-white rounded-full hover:bg-indigo-700 transition-colors shadow-sm"
-                  title="Add new project"
-                >
-                  <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M12 4v16m8-8H4" />
-                  </svg>
-                </button>
+                <>
+                  <button
+                    onClick={openAddProjectModal}
+                    className="w-8 h-8 flex items-center justify-center bg-indigo-600 text-white rounded-full hover:bg-indigo-700 transition-colors shadow-sm"
+                    title="Add new project"
+                  >
+                    <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M12 4v16m8-8H4" />
+                    </svg>
+                  </button>
+                  <button
+                    onClick={openImportModal}
+                    className="w-8 h-8 flex items-center justify-center bg-green-600 text-white rounded-full hover:bg-green-700 transition-colors shadow-sm"
+                    title="Import project"
+                  >
+                    <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-8l-4-4m0 0L8 8m4-4v12" />
+                    </svg>
+                  </button>
+                </>
               )}
             </div>
             <span className="text-sm text-gray-500">
@@ -660,6 +719,106 @@ export default function DashboardPage() {
                 </button>
               </div>
             </form>
+          </div>
+        </div>
+      )}
+
+      {/* Import Project Modal */}
+      {showImportModal && (
+        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
+          <div className="bg-white rounded-lg shadow-xl w-full max-w-md mx-4">
+            <div className="flex items-center justify-between p-4 border-b">
+              <h3 className="text-lg font-semibold text-gray-900">Import Project</h3>
+              <button
+                onClick={() => setShowImportModal(false)}
+                className="text-gray-400 hover:text-gray-600"
+              >
+                <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M6 18L18 6M6 6l12 12" />
+                </svg>
+              </button>
+            </div>
+
+            <div className="p-4 space-y-4">
+              {importError && (
+                <div className="p-3 bg-red-50 border border-red-200 rounded-md text-sm text-red-600">
+                  {importError}
+                </div>
+              )}
+
+              {importResult ? (
+                <div className="space-y-4">
+                  <div className="p-3 bg-green-50 border border-green-200 rounded-md">
+                    <p className="text-sm font-medium text-green-800">Project imported successfully!</p>
+                    <p className="text-sm text-green-700 mt-1">
+                      Project: <strong>{importResult.project_name}</strong>
+                    </p>
+                    <ul className="text-sm text-green-600 mt-2 space-y-1">
+                      <li>• {importResult.summary.users_processed} users processed</li>
+                      <li>• {importResult.summary.stages_created} stages created</li>
+                      <li>• {importResult.summary.tasks_created} tasks created</li>
+                      <li>• {importResult.summary.timesheet_entries_created} timesheet entries created</li>
+                    </ul>
+                  </div>
+                  <div className="flex gap-3">
+                    <button
+                      onClick={() => setShowImportModal(false)}
+                      className="flex-1 px-4 py-2 border border-gray-300 rounded-md text-gray-700 hover:bg-gray-50 transition-colors"
+                    >
+                      Close
+                    </button>
+                    <button
+                      onClick={() => router.push(`/projects/${importResult.project_id}`)}
+                      className="flex-1 px-4 py-2 bg-indigo-600 text-white rounded-md hover:bg-indigo-700 transition-colors"
+                    >
+                      View Project
+                    </button>
+                  </div>
+                </div>
+              ) : (
+                <>
+                  <div>
+                    <label className="block text-sm font-medium text-gray-700 mb-2">
+                      Select JSON file to import
+                    </label>
+                    <input
+                      type="file"
+                      accept=".json"
+                      onChange={(e) => setImportFile(e.target.files?.[0] || null)}
+                      className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500"
+                    />
+                    {importFile && (
+                      <p className="text-sm text-gray-500 mt-1">
+                        Selected: {importFile.name}
+                      </p>
+                    )}
+                  </div>
+
+                  <div className="bg-blue-50 border border-blue-200 rounded-md p-3">
+                    <p className="text-sm text-blue-700">
+                      <strong>Note:</strong> Users that don't exist will be created with a temporary password.
+                      They will need to reset their password on first login.
+                    </p>
+                  </div>
+
+                  <div className="flex gap-3 pt-2">
+                    <button
+                      onClick={() => setShowImportModal(false)}
+                      className="flex-1 px-4 py-2 border border-gray-300 rounded-md text-gray-700 hover:bg-gray-50 transition-colors"
+                    >
+                      Cancel
+                    </button>
+                    <button
+                      onClick={handleImportProject}
+                      disabled={isImporting || !importFile}
+                      className="flex-1 px-4 py-2 bg-green-600 text-white rounded-md hover:bg-green-700 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                    >
+                      {isImporting ? 'Importing...' : 'Import'}
+                    </button>
+                  </div>
+                </>
+              )}
+            </div>
           </div>
         </div>
       )}

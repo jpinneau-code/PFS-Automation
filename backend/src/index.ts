@@ -486,6 +486,20 @@ async function initDatabase() {
 
     console.log('  ✓ User settings table ready')
 
+    // ============================================
+    // 12. Add must_reset_password column to users if not exists
+    // ============================================
+    await client.query(`
+      DO $$
+      BEGIN
+        IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'users' AND column_name = 'must_reset_password') THEN
+          ALTER TABLE users ADD COLUMN must_reset_password BOOLEAN DEFAULT FALSE;
+        END IF;
+      END $$
+    `)
+
+    console.log('  ✓ Users must_reset_password column ready')
+
     console.log('✅ Database schema initialized successfully')
   } catch (error) {
     console.error('Database initialization error:', error)
@@ -2395,6 +2409,491 @@ app.get('/api/timesheet/viewable-users', async (req, res) => {
   } catch (error) {
     console.error('Get viewable users error:', error)
     res.status(500).json({ error: 'Failed to fetch viewable users' })
+  }
+})
+
+// ============================================
+// PROJECT EXPORT / IMPORT
+// ============================================
+
+// Export a project with all its dependencies
+app.get('/api/projects/:projectId/export', async (req, res) => {
+  const { projectId } = req.params
+
+  try {
+    // 1. Get project details
+    const projectResult = await pool.query(`
+      SELECT p.*,
+             c.client_name,
+             pt.type_name as project_type_name,
+             pm.email as project_manager_email
+      FROM projects p
+      JOIN clients c ON p.client_id = c.id
+      LEFT JOIN project_types pt ON p.project_type_id = pt.id
+      JOIN users pm ON p.project_manager_id = pm.id
+      WHERE p.id = $1
+    `, [projectId])
+
+    if (projectResult.rows.length === 0) {
+      return res.status(404).json({ error: 'Project not found' })
+    }
+
+    const project = projectResult.rows[0]
+
+    // 2. Get client details
+    const clientResult = await pool.query(`
+      SELECT client_name, contact_first_name, contact_last_name, contact_email,
+             contact_phone, address, city, country, postal_code
+      FROM clients WHERE id = $1
+    `, [project.client_id])
+    const clientData = clientResult.rows[0]
+
+    // 3. Get project type if exists
+    let projectTypeData = null
+    if (project.project_type_id) {
+      const ptResult = await pool.query(`
+        SELECT type_name, description FROM project_types WHERE id = $1
+      `, [project.project_type_id])
+      projectTypeData = ptResult.rows[0] || null
+    }
+
+    // 4. Get all users involved (PM, team members, task responsibles, timesheet users)
+    const usersResult = await pool.query(`
+      SELECT DISTINCT u.id, u.email, u.username, u.first_name, u.last_name,
+                      u.user_type, u.daily_work_hours, u.is_active
+      FROM users u
+      WHERE u.id = $1
+         OR u.id IN (SELECT user_id FROM project_users WHERE project_id = $2)
+         OR u.id IN (SELECT responsible_id FROM tasks WHERE project_id = $2 AND responsible_id IS NOT NULL)
+         OR u.id IN (
+           SELECT te.user_id FROM timesheet_entries te
+           JOIN tasks t ON te.task_id = t.id
+           WHERE t.project_id = $2
+         )
+    `, [project.project_manager_id, projectId])
+
+    // Create user reference map
+    const userRefMap: Record<number, string> = {}
+    const usersExport = usersResult.rows.map((user, index) => {
+      const ref = `USR_${index + 1}`
+      userRefMap[user.id] = ref
+      return {
+        ref,
+        email: user.email,
+        username: user.username,
+        first_name: user.first_name,
+        last_name: user.last_name,
+        user_type: user.user_type,
+        daily_work_hours: parseFloat(user.daily_work_hours) || 8,
+        is_active: user.is_active
+      }
+    })
+
+    // 5. Get team members
+    const teamResult = await pool.query(`
+      SELECT user_id, role FROM project_users WHERE project_id = $1
+    `, [projectId])
+    const teamExport = teamResult.rows.map(tm => ({
+      user_ref: userRefMap[tm.user_id],
+      role: tm.role
+    }))
+
+    // 6. Get stages
+    const stagesResult = await pool.query(`
+      SELECT id, stage_name, stage_order, start_date, end_date, description, is_completed
+      FROM stages WHERE project_id = $1 ORDER BY stage_order
+    `, [projectId])
+
+    const stageRefMap: Record<number, string> = {}
+    const stagesExport = stagesResult.rows.map((stage, index) => {
+      const ref = `STG_${index + 1}`
+      stageRefMap[stage.id] = ref
+      return {
+        ref,
+        stage_name: stage.stage_name,
+        stage_order: stage.stage_order,
+        start_date: stage.start_date,
+        end_date: stage.end_date,
+        description: stage.description,
+        is_completed: stage.is_completed
+      }
+    })
+
+    // 7. Get tasks (including subtasks)
+    const tasksResult = await pool.query(`
+      SELECT id, stage_id, parent_task_id, task_name, description, sold_days,
+             responsible_id, priority, status, display_order, start_date, due_date,
+             remaining_hours, last_remaining_update_total, completed_at
+      FROM tasks WHERE project_id = $1 ORDER BY stage_id, display_order
+    `, [projectId])
+
+    const taskRefMap: Record<number, string> = {}
+    const tasksExport = tasksResult.rows.map((task, index) => {
+      const ref = `TSK_${index + 1}`
+      taskRefMap[task.id] = ref
+      return {
+        ref,
+        stage_ref: task.stage_id ? stageRefMap[task.stage_id] : null,
+        parent_task_id: task.parent_task_id, // Will be replaced with ref after mapping all tasks
+        task_name: task.task_name,
+        description: task.description,
+        sold_days: parseFloat(task.sold_days) || 0,
+        responsible_ref: task.responsible_id ? userRefMap[task.responsible_id] : null,
+        priority: task.priority,
+        status: task.status,
+        display_order: task.display_order,
+        start_date: task.start_date,
+        due_date: task.due_date,
+        remaining_hours: task.remaining_hours ? parseFloat(task.remaining_hours) : null,
+        last_remaining_update_total: task.last_remaining_update_total ? parseFloat(task.last_remaining_update_total) : null,
+        completed_at: task.completed_at
+      }
+    })
+
+    // Replace parent_task_id with parent_task_ref
+    tasksExport.forEach(task => {
+      if (task.parent_task_id) {
+        (task as any).parent_task_ref = taskRefMap[task.parent_task_id]
+      } else {
+        (task as any).parent_task_ref = null
+      }
+      delete task.parent_task_id
+    })
+
+    // 8. Get timesheet entries
+    const timesheetResult = await pool.query(`
+      SELECT te.task_id, te.user_id, te.date, te.hours, te.description
+      FROM timesheet_entries te
+      JOIN tasks t ON te.task_id = t.id
+      WHERE t.project_id = $1
+      ORDER BY te.date
+    `, [projectId])
+
+    const timesheetExport = timesheetResult.rows.map(entry => ({
+      task_ref: taskRefMap[entry.task_id],
+      user_ref: userRefMap[entry.user_id],
+      entry_date: entry.date,
+      hours: parseFloat(entry.hours),
+      description: entry.description
+    }))
+
+    // Build export object
+    const exportData = {
+      version: '1.0',
+      exported_at: new Date().toISOString(),
+      source_project_id: parseInt(projectId),
+
+      users: usersExport,
+
+      client: clientData,
+
+      project_type: projectTypeData,
+
+      project: {
+        project_name: project.project_name,
+        description: project.description,
+        status: project.status,
+        erp_ref: project.erp_ref,
+        country: project.country,
+        start_date: project.start_date,
+        end_date: project.end_date,
+        budget: project.budget ? parseFloat(project.budget) : null,
+        project_manager_ref: userRefMap[project.project_manager_id]
+      },
+
+      team_members: teamExport,
+      stages: stagesExport,
+      tasks: tasksExport,
+      timesheet_entries: timesheetExport
+    }
+
+    // Set headers for file download
+    const filename = `project_${project.project_name.replace(/[^a-z0-9]/gi, '_')}_${new Date().toISOString().split('T')[0]}.json`
+    res.setHeader('Content-Disposition', `attachment; filename="${filename}"`)
+    res.setHeader('Content-Type', 'application/json')
+
+    res.json(exportData)
+  } catch (error) {
+    console.error('Export project error:', error)
+    res.status(500).json({ error: 'Failed to export project' })
+  }
+})
+
+// Import a project from JSON
+app.post('/api/projects/import', async (req, res) => {
+  const importData = req.body
+
+  // Validate import data
+  if (!importData.version || !importData.project || !importData.client) {
+    return res.status(400).json({ error: 'Invalid import file format' })
+  }
+
+  const client = await pool.connect()
+
+  try {
+    await client.query('BEGIN')
+
+    // Maps to track old refs to new IDs
+    const userRefToId: Record<string, number> = {}
+    const stageRefToId: Record<string, number> = {}
+    const taskRefToId: Record<string, number> = {}
+
+    // 1. Process users - find existing or create new
+    for (const user of importData.users || []) {
+      // Check if user exists by email
+      const existingUser = await client.query(
+        'SELECT id FROM users WHERE email = $1',
+        [user.email]
+      )
+
+      if (existingUser.rows.length > 0) {
+        userRefToId[user.ref] = existingUser.rows[0].id
+      } else {
+        // Create new user with temporary password
+        const tempPassword = crypto.randomBytes(16).toString('hex')
+        const hashedPassword = await bcrypt.hash(tempPassword, 10)
+
+        const newUser = await client.query(`
+          INSERT INTO users (email, username, password, first_name, last_name, user_type,
+                            daily_work_hours, is_active, must_reset_password)
+          VALUES ($1, $2, $3, $4, $5, $6, $7, $8, TRUE)
+          RETURNING id
+        `, [
+          user.email,
+          user.username + '_' + Date.now(), // Ensure unique username
+          hashedPassword,
+          user.first_name,
+          user.last_name,
+          user.user_type,
+          user.daily_work_hours || 8,
+          user.is_active !== false
+        ])
+
+        userRefToId[user.ref] = newUser.rows[0].id
+      }
+    }
+
+    // 2. Find or create client
+    let clientId: number
+    const existingClient = await client.query(
+      'SELECT id FROM clients WHERE client_name = $1',
+      [importData.client.client_name]
+    )
+
+    if (existingClient.rows.length > 0) {
+      clientId = existingClient.rows[0].id
+    } else {
+      const newClient = await client.query(`
+        INSERT INTO clients (client_name, contact_first_name, contact_last_name,
+                            contact_email, contact_phone, address, city, country, postal_code)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+        RETURNING id
+      `, [
+        importData.client.client_name,
+        importData.client.contact_first_name,
+        importData.client.contact_last_name,
+        importData.client.contact_email,
+        importData.client.contact_phone,
+        importData.client.address,
+        importData.client.city,
+        importData.client.country,
+        importData.client.postal_code
+      ])
+      clientId = newClient.rows[0].id
+    }
+
+    // 3. Find project type (don't create new ones)
+    let projectTypeId: number | null = null
+    if (importData.project_type?.type_name) {
+      const ptResult = await client.query(
+        'SELECT id FROM project_types WHERE type_name = $1',
+        [importData.project_type.type_name]
+      )
+      if (ptResult.rows.length > 0) {
+        projectTypeId = ptResult.rows[0].id
+      }
+    }
+
+    // 4. Check if project name already exists, add suffix if needed
+    let projectName = importData.project.project_name
+    const existingProject = await client.query(
+      'SELECT id FROM projects WHERE project_name = $1',
+      [projectName]
+    )
+    if (existingProject.rows.length > 0) {
+      projectName = `${projectName} (Imported ${new Date().toISOString().split('T')[0]})`
+    }
+
+    // 5. Create project
+    const projectManagerId = userRefToId[importData.project.project_manager_ref]
+    if (!projectManagerId) {
+      throw new Error('Project manager not found in import data')
+    }
+
+    const newProject = await client.query(`
+      INSERT INTO projects (project_name, client_id, project_manager_id, project_type_id,
+                           description, status, erp_ref, country, start_date, end_date, budget)
+      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+      RETURNING id
+    `, [
+      projectName,
+      clientId,
+      projectManagerId,
+      projectTypeId,
+      importData.project.description,
+      importData.project.status || 'created',
+      importData.project.erp_ref,
+      importData.project.country,
+      importData.project.start_date,
+      importData.project.end_date,
+      importData.project.budget
+    ])
+    const projectId = newProject.rows[0].id
+
+    // 6. Add team members
+    for (const member of importData.team_members || []) {
+      const userId = userRefToId[member.user_ref]
+      if (userId) {
+        await client.query(`
+          INSERT INTO project_users (project_id, user_id, role)
+          VALUES ($1, $2, $3)
+          ON CONFLICT (project_id, user_id) DO NOTHING
+        `, [projectId, userId, member.role])
+      }
+    }
+
+    // 7. Create stages
+    for (const stage of importData.stages || []) {
+      const newStage = await client.query(`
+        INSERT INTO stages (project_id, stage_name, stage_order, start_date, end_date,
+                           description, is_completed)
+        VALUES ($1, $2, $3, $4, $5, $6, $7)
+        RETURNING id
+      `, [
+        projectId,
+        stage.stage_name,
+        stage.stage_order,
+        stage.start_date,
+        stage.end_date,
+        stage.description,
+        stage.is_completed || false
+      ])
+      stageRefToId[stage.ref] = newStage.rows[0].id
+    }
+
+    // 8. Create tasks (parent tasks first, then subtasks)
+    const parentTasks = (importData.tasks || []).filter((t: any) => !t.parent_task_ref)
+    const childTasks = (importData.tasks || []).filter((t: any) => t.parent_task_ref)
+
+    for (const task of parentTasks) {
+      const stageId = task.stage_ref ? stageRefToId[task.stage_ref] : null
+      const responsibleId = task.responsible_ref ? userRefToId[task.responsible_ref] : null
+
+      const newTask = await client.query(`
+        INSERT INTO tasks (project_id, stage_id, parent_task_id, task_name, description,
+                          sold_days, responsible_id, priority, status, display_order,
+                          start_date, due_date, remaining_hours, last_remaining_update_total, completed_at)
+        VALUES ($1, $2, NULL, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
+        RETURNING id
+      `, [
+        projectId,
+        stageId,
+        task.task_name,
+        task.description,
+        task.sold_days || 0,
+        responsibleId,
+        task.priority || 'medium',
+        task.status || 'todo',
+        task.display_order || 0,
+        task.start_date,
+        task.due_date,
+        task.remaining_hours,
+        task.last_remaining_update_total,
+        task.completed_at
+      ])
+      taskRefToId[task.ref] = newTask.rows[0].id
+    }
+
+    // Now create subtasks
+    for (const task of childTasks) {
+      const stageId = task.stage_ref ? stageRefToId[task.stage_ref] : null
+      const parentTaskId = taskRefToId[task.parent_task_ref]
+      const responsibleId = task.responsible_ref ? userRefToId[task.responsible_ref] : null
+
+      const newTask = await client.query(`
+        INSERT INTO tasks (project_id, stage_id, parent_task_id, task_name, description,
+                          sold_days, responsible_id, priority, status, display_order,
+                          start_date, due_date, remaining_hours, last_remaining_update_total, completed_at)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)
+        RETURNING id
+      `, [
+        projectId,
+        stageId,
+        parentTaskId,
+        task.task_name,
+        task.description,
+        task.sold_days || 0,
+        responsibleId,
+        task.priority || 'medium',
+        task.status || 'todo',
+        task.display_order || 0,
+        task.start_date,
+        task.due_date,
+        task.remaining_hours,
+        task.last_remaining_update_total,
+        task.completed_at
+      ])
+      taskRefToId[task.ref] = newTask.rows[0].id
+    }
+
+    // 9. Create timesheet entries
+    for (const entry of importData.timesheet_entries || []) {
+      const taskId = taskRefToId[entry.task_ref]
+      const userId = userRefToId[entry.user_ref]
+
+      if (taskId && userId) {
+        await client.query(`
+          INSERT INTO timesheet_entries (task_id, user_id, date, hours, description, entered_by)
+          VALUES ($1, $2, $3, $4, $5, $6)
+          ON CONFLICT (user_id, task_id, date) DO UPDATE SET
+            hours = EXCLUDED.hours,
+            description = EXCLUDED.description
+        `, [
+          taskId,
+          userId,
+          entry.entry_date,
+          entry.hours,
+          entry.description,
+          userId
+        ])
+      }
+    }
+
+    await client.query('COMMIT')
+
+    // Count created users for response
+    const createdUsers = (importData.users || []).filter((u: any) => {
+      // Check if this was a new user (we can't easily track this, so we'll just report total)
+      return true
+    })
+
+    res.json({
+      success: true,
+      project_id: projectId,
+      project_name: projectName,
+      summary: {
+        users_processed: (importData.users || []).length,
+        stages_created: (importData.stages || []).length,
+        tasks_created: (importData.tasks || []).length,
+        timesheet_entries_created: (importData.timesheet_entries || []).length
+      }
+    })
+  } catch (error: any) {
+    await client.query('ROLLBACK')
+    console.error('Import project error:', error)
+    res.status(500).json({ error: error.message || 'Failed to import project' })
+  } finally {
+    client.release()
   }
 })
 
